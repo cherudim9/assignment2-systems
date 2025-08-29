@@ -141,8 +141,8 @@ def flash_fwd_kernel(
         order=(0,),
     )
 
-    tl.store(O_block_ptr, o, boundaray_check=(0,1))
-    tl.store(L_block_ptr, l, boundaray_check=(0,))
+    tl.store(O_block_ptr, o, boundary_check=(0,1))
+    tl.store(L_block_ptr, l, boundary_check=(0,))
 
 
 class FlashAttentionTritonFunc(torch.autograd.Function):
@@ -159,7 +159,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         bs, N_KEYS, D = K.shape
 
         O = torch.empty_like(Q)
-        L = torch.empty((bs, N_QUERIES,))
+        L = torch.empty((bs, N_QUERIES,), device=Q.device)
 
         flash_fwd_kernel[(bs, Tq)](
             Q, K, V,
