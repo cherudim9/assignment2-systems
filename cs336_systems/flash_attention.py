@@ -59,11 +59,13 @@ class FlashAttentionFunc(torch.autograd.Function):
 def flash_fwd_kernel(
     Q_ptr, K_ptr, V_ptr,
     O_ptr, L_ptr,
+    mask_ptr,
     stride_qb, stride_qq, stride_qd,
     stride_kb, stride_kk, stride_kd,
     stride_vb, stride_vk, stride_vd,
     stride_ob, stride_oq, stride_od,
     stride_lb, stride_lq,
+    stride_mq, stride_mk,
     N_QUERIES, N_KEYS,
     scale,
     D: tl.constexpr,
@@ -105,22 +107,27 @@ def flash_fwd_kernel(
         order=(1, 0),
     )
 
+    mask_block_ptr = tl.make_block_ptr(
+        mask_ptr,
+        shape=(N_QUERIES, N_KEYS),
+        strides=(stride_mq, stride_mk),
+        offsets=(query_tile_index * Q_TILE_SIZE, 0),
+        block_shape=(Q_TILE_SIZE, K_TILE_SIZE),
+        order=(1, 0),
+    )
+
     o = tl.zeros((Q_TILE_SIZE, D), dtype=tl.float32)
     l = tl.zeros((Q_TILE_SIZE,), dtype=tl.float32)
     m = tl.full((Q_TILE_SIZE,), float('-inf'), dtype=tl.float32)
-
-    query_start = query_tile_index * Q_TILE_SIZE
-    key_start = 0
-    mask = tl.arange(0, N_QUERIES) >= tl.arange(0, N_KEYS)
+    
     for _ in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
         kj = tl.load(K_block_ptr, boundary_check=(0,1), padding_option="zero")
         vj = tl.load(V_block_ptr, boundary_check=(0,1), padding_option="zero")
 
         s = tl.dot(qi, kj.trans()) * scale
         if is_causal:
-            s = tl.where(
-                mask[query_start:(query_start + Q_TILE_SIZE), key_start:(key_start + K_TILE_SIZE)],
-                s, -1e6)
+            mask = tl.load(mask_block_ptr, boundary_check=(0,1), padding_option="zero")
+            s = tl.where(mask, s, -1e6)
         prev_m = m
         m = tl.maximum(prev_m, tl.max(s, axis=1))
         p = tl.exp(s - m.expand_dims(axis=1))
@@ -130,7 +137,7 @@ def flash_fwd_kernel(
 
         K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
         V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
-        key_start += K_TILE_SIZE
+        mask_block_ptr = mask_block_ptr.advance((0, K_TILE_SIZE))
 
     o = (1.0 / l).expand_dims(axis=1) * o
     l = tl.log(l) + m
@@ -173,15 +180,18 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
 
         O = torch.empty_like(Q)
         L = torch.empty((bs, N_QUERIES,), device=Q.device)
+        mask = tl.arange(0, N_QUERIES) >= tl.arange(0, N_KEYS)
 
         flash_fwd_kernel[(bs, Tq)](
             Q, K, V,
             O, L,
+            mask,
             Q.stride(0), Q.stride(1), Q.stride(2),
             K.stride(0), K.stride(1), K.stride(2),
             V.stride(0), V.stride(1), V.stride(2),
             O.stride(0), O.stride(1), O.stride(2),
             L.stride(0), L.stride(1),
+            mask.stride(0), mask.stride(1),
             N_QUERIES=N_QUERIES, N_KEYS=N_KEYS,
             scale=scale,
             D=D,  
