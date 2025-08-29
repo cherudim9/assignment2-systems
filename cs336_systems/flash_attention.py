@@ -71,8 +71,8 @@ def flash_fwd_kernel(
     K_TILE_SIZE: tl.constexpr,
 ):
 
-    query_tile_index = tl.program_id(0)
-    batch_index = tl.program_id(1)
+    batch_index = tl.program_id(0)
+    query_tile_index = tl.program_id(1)
     
     # Offset each pointer with the corresponding batch index\
     # multiplied with the batch stride for each tensor
@@ -117,8 +117,8 @@ def flash_fwd_kernel(
         m = tl.maximum(prev_m, tl.max(s, axis=1))
         p = tl.exp(s - m.expand_dims(axis=1))
         l = l * tl.exp(prev_m - m) + tl.sum(p, axis=1)
-        o = (prev_m - m).expand_dims(axis=1) * o
-        tl.dot(p.cast(dtype=V_block_ptr.dtype.element_ty), vj, acc=o)
+        o = tl.exp(prev_m - m).expand_dims(axis=1) * o
+        o = tl.dot(p.to(dtype=V_block_ptr.dtype.element_ty), vj, acc=o)
 
         K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
         V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
@@ -134,7 +134,7 @@ def flash_fwd_kernel(
         block_shape=(Q_TILE_SIZE, D),
         order=(1, 0),
     )
-    tl.store(O_block_ptr, o.cast(dtype=O_block_ptr.dtype.element_ty), boundary_check=(0,1))
+    tl.store(O_block_ptr, o.to(O_block_ptr.dtype.element_ty), boundary_check=(0,1))
 
     L_block_ptr = tl.make_block_ptr(
         L_ptr + batch_index * stride_lb,
@@ -144,7 +144,7 @@ def flash_fwd_kernel(
         block_shape=(Q_TILE_SIZE,),
         order=(0,),
     )
-    tl.store(L_block_ptr, l.cast(dtype=L_block_ptr.dtype.element_ty), boundary_check=(0,))
+    tl.store(L_block_ptr, l.to(L_block_ptr.dtype.element_ty), boundary_check=(0,))
 
 
 class FlashAttentionTritonFunc(torch.autograd.Function):
