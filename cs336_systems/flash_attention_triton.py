@@ -121,6 +121,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V, is_causal=False):
         Q_shape = Q.shape
+        K_shape = K.shape
         ctx.q_shape = Q_shape
         ctx.is_causal = is_causal
         Q = rearrange(Q, "... seq_len d -> (...) seq_len d")
@@ -155,7 +156,12 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         )
 
         L = L.view(Q_shape[:-1])
-        ctx.save_for_backward(L)
+        ctx.save_for_backward(Q, K, V, O, L)
+        ctx.Bq = Bq
+        ctx.Bk = Bk
+        ctx.Q_shape = Q_shape
+        ctx.K_shape = K_shape
+        ctx.is_causal = is_causal
 
         O = O.view(Q_shape)
         return O
