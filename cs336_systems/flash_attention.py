@@ -159,7 +159,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         bs, N_KEYS, d = K.shape
 
         O = torch.empty_like(Q)
-        L = torch.empty((bs, nq,))
+        L = torch.empty((bs, N_QUERIES,))
 
         flash_fwd_kernel[(tl.cdiv(bs), Tq)](
             Q, K, V,
@@ -181,6 +181,10 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
 
         O = O.view(Q_shape)
         return O
+    
+    @staticmethod
+    def backward(ctx, grad_out):
+        raise NotImplementedError
 
 
 
