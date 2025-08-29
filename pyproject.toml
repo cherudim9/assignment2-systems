@@ -17,6 +17,7 @@ dependencies = [
     "pandas>=2",
     "ty>=0.0.1a16",
     "triton",
+    "einops",
 ]
 
 [build-system]
