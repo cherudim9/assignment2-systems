@@ -123,6 +123,9 @@ def flash_fwd_kernel(
         K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
         V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
 
+    o = (1.0 / l).expand_dims(axis=1) * o
+    l = tl.log(l) + m
+
     O_block_ptr = tl.make_block_ptr(
         O_ptr + batch_index * stride_ob,
         shape=(N_QUERIES, D),
@@ -131,6 +134,7 @@ def flash_fwd_kernel(
         block_shape=(Q_TILE_SIZE, D),
         order=(1, 0),
     )
+    tl.store(O_block_ptr, o.cast(dtype=O_block_ptr.dtype.element_ty), boundary_check=(0,1))
 
     L_block_ptr = tl.make_block_ptr(
         L_ptr + batch_index * stride_lb,
@@ -140,8 +144,6 @@ def flash_fwd_kernel(
         block_shape=(Q_TILE_SIZE,),
         order=(0,),
     )
-
-    tl.store(O_block_ptr, o.cast(dtype=O_block_ptr.dtype.element_ty), boundary_check=(0,1))
     tl.store(L_block_ptr, l.cast(dtype=L_block_ptr.dtype.element_ty), boundary_check=(0,))
 
 
