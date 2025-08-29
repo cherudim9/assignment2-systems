@@ -118,7 +118,7 @@ def flash_fwd_kernel(
         p = tl.exp(s - m.expand_dims(axis=1))
         l = l * tl.exp(prev_m - m) + tl.sum(p, axis=1)
         o = (prev_m - m).expand_dims(axis=1) * o
-        tl.dot(p, vj, acc=o)
+        tl.dot(p.cast(dtype=V_block_ptr.dtype.element_ty), vj, acc=o)
 
         K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
         V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
@@ -141,8 +141,8 @@ def flash_fwd_kernel(
         order=(0,),
     )
 
-    tl.store(O_block_ptr, o, boundary_check=(0,1))
-    tl.store(L_block_ptr, l, boundary_check=(0,))
+    tl.store(O_block_ptr, o.cast(dtype=O_block_ptr.dtype.element_ty), boundary_check=(0,1))
+    tl.store(L_block_ptr, l.cast(dtype=L_block_ptr.dtype.element_ty), boundary_check=(0,))
 
 
 class FlashAttentionTritonFunc(torch.autograd.Function):
