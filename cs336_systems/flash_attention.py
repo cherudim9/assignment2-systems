@@ -9,6 +9,7 @@ class FlashAttentionFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V, is_causal=False):
         Q_shape = Q.shape
+        K_shape = K.shape
         Q = rearrange(Q, "... seq_len d -> (...) seq_len d")
         K = rearrange(K, "... seq_len d -> (...) seq_len d")
         V = rearrange(V, "... seq_len d -> (...) seq_len d")
@@ -44,10 +45,55 @@ class FlashAttentionFunc(torch.autograd.Function):
 
         L = L.view(Q_shape[:-1])
         ctx.save_for_backward(Q, K, V, O, L)
+        ctx.Bq = Bq
+        ctx.Bk = Bk
+        ctx.Q_shape = Q_shape
+        ctx.K_shape = K_shape
+        ctx.is_causal = is_causal
 
         O = O.view(Q_shape)
         return O
     
     @staticmethod
-    def backward(ctx, do):
+    def backward(ctx, dO):
         Q, K, V, O, L = ctx.saved_tensors
+
+        # recover all parameters
+        Bq, Bk = ctx.Bq, ctx.Bk
+        bs, nq, d = Q.shape
+        nk = K.shape[1]
+        Tq = math.ceil(nq/Bq)
+        Tk = math.ceil(nk/Bk)
+        isrd = d ** -0.5
+
+        dQ = torch.zeros_like(Q)
+        dK = torch.empty_like(K)
+        dV = torch.empty_like(V)
+        for batch_idx in range(bs):
+            D = torch.sum(O[batch_idx] * dO[batch_idx], dim=1)
+            for j in range(Tk):
+                kj = K[batch_idx, j * Bk : min((j + 1) * Bk, nk), :]
+                vj = V[batch_idx, j * Bk : min((j + 1) * Bk, nk), :]
+                dK_sum = torch.zeros_like(kj)
+                dV_sum = torch.zeros_like(vj)
+                for i in range(Tq):
+                    qi = Q[batch_idx, i * Bq : min((i + 1) * Bq, nq), :]
+                    doi = dO[batch_idx, i * Bq : min((i + 1) * Bq, nq), :]
+                    li = L[batch_idx, i * Bq : min((i + 1) * Bq, nq)]
+                    Di = D[i * Bq : min((i + 1) * Bq, nq)]
+
+                    s = qi @ kj.T * isrd
+                    p = torch.exp(s - li[:, None])
+                    dV_sum += p.T @ doi
+                    dP = doi @ vj.T
+                    ds = p * (dP - Di[:, None]) * isrd
+                    dQ[batch_idx, i * Bq : min((i + 1) * Bq, nq), :] += ds @ kj
+                    dK_sum += ds.T @ qi
+
+                dK[batch_idx, j * Bk : min((j + 1) * Bk, nk), :] = dK_sum
+                dV[batch_idx, j * Bk : min((j + 1) * Bk, nk), :] = dV_sum
+
+        dQ = dQ.view(ctx.Q_shape)
+        dK = dK.view(ctx.K_shape)
+        dV = dV.view(ctx.K_shape)
+        return dQ, dK, dV, None
