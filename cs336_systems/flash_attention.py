@@ -118,7 +118,7 @@ def flash_fwd_kernel(
         p = tl.exp(s - m.expand_dims(axis=1))
         l = l * tl.exp(prev_m - m) + tl.sum(p, axis=1)
         o = (prev_m - m).expand_dims(axis=1) * o
-        tl.dot(p, vj, acc=o)
+        tl.dot(p, vj.trans(), acc=o)
 
         K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
         V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
