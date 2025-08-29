@@ -161,7 +161,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         O = torch.empty_like(Q)
         L = torch.empty((bs, N_QUERIES,))
 
-        flash_fwd_kernel[(tl.cdiv(bs), Tq)](
+        flash_fwd_kernel[(bs, Tq)](
             Q, K, V,
             O, L,
             Q.stride(0), Q.stride(1), Q.stride(2),
