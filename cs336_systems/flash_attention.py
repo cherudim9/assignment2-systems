@@ -180,7 +180,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
 
         O = torch.empty_like(Q)
         L = torch.empty((bs, N_QUERIES,), device=Q.device)
-        mask = torch.arange(N_QUERIES)[:, None] >= torch.arange(N_KEYS)[None, :]
+        mask = torch.arange(N_QUERIES, device=Q.device)[:, None] >= torch.arange(N_KEYS, device=Q.device)[None, :]
 
         flash_fwd_kernel[(bs, Tq)](
             Q, K, V,
