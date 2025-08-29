@@ -154,9 +154,9 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         V = rearrange(V, "... seq_len d -> (...) seq_len d")
         
         bs, N_QUERIES, D = Q.shape
-        scale = d ** -0.5
+        scale = D ** -0.5
         Tq = math.ceil(N_QUERIES / Bq)
-        bs, N_KEYS, d = K.shape
+        bs, N_KEYS, D = K.shape
 
         O = torch.empty_like(Q)
         L = torch.empty((bs, N_QUERIES,))
