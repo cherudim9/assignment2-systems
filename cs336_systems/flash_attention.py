@@ -69,6 +69,7 @@ def flash_fwd_kernel(
     D: tl.constexpr,
     Q_TILE_SIZE: tl.constexpr,
     K_TILE_SIZE: tl.constexpr,
+    is_causal: tl.constexpr,
 ):
 
     batch_index = tl.program_id(0)
@@ -108,11 +109,18 @@ def flash_fwd_kernel(
     l = tl.zeros((Q_TILE_SIZE,), dtype=tl.float32)
     m = tl.full((Q_TILE_SIZE,), float('-inf'), dtype=tl.float32)
 
+    query_start = query_tile_index * Q_TILE_SIZE
+    key_start = 0
     for _ in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
         kj = tl.load(K_block_ptr, boundary_check=(0,1), padding_option="zero")
         vj = tl.load(V_block_ptr, boundary_check=(0,1), padding_option="zero")
 
         s = tl.dot(qi, kj.trans()) * scale
+        if is_causal:
+            s = tl.where(
+                tl.arange(query_start, query_start + Q_TILE_SIZE) >= tl.arange(key_start, key_start + K_TILE_SIZE),
+                s,
+                -1e6)
         prev_m = m
         m = tl.maximum(prev_m, tl.max(s, axis=1))
         p = tl.exp(s - m.expand_dims(axis=1))
@@ -122,6 +130,7 @@ def flash_fwd_kernel(
 
         K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
         V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
+        key_start += K_TILE_SIZE
 
     o = (1.0 / l).expand_dims(axis=1) * o
     l = tl.log(l) + m
@@ -151,6 +160,8 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V, is_causal=False):
         Q_shape = Q.shape
+        ctx.q_shape = Q_shape
+        ctx.is_causal = is_causal
         Q = rearrange(Q, "... seq_len d -> (...) seq_len d")
         K = rearrange(K, "... seq_len d -> (...) seq_len d")
         V = rearrange(V, "... seq_len d -> (...) seq_len d")
@@ -176,6 +187,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             D=D,  
             Q_TILE_SIZE=Bq,
             K_TILE_SIZE=Bk,
+            is_causal=is_causal,
         )
 
         L = L.view(Q_shape[:-1])
