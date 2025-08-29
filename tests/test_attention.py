@@ -73,17 +73,20 @@ def test_flash_forward_pass_triton(is_causal):
 
 def flash_backward_results(impl, is_causal, device=None):
     q, k, v, do = _make_attn_inputs(device=device)
-    impl(q, k, v, is_causal).backward(do) 
-    return q.grad, k.grad, v.grad
+    o = impl(q, k, v, is_causal)
+    o.backward(do) 
+    return o, q.grad, k.grad, v.grad
 
 
 @pytest.mark.parametrize("is_causal", [False, True])
 def test_flash_backward_pytorch(is_causal):
-    dq_expected, dk_expected, dv_expected = flash_backward_results(lambda *args: _attention_and_lse(*args)[0], is_causal)
+    o_expected, dq_expected, dk_expected, dv_expected = flash_backward_results(lambda *args: _attention_and_lse(*args)[0], is_causal)
 
     q, k, v, do = _make_attn_inputs()
-    get_flashattention_autograd_function_pytorch().apply(q, k, v, is_causal).backward(do)
+    o = get_flashattention_autograd_function_pytorch().apply(q, k, v, is_causal)
+    o.backward(do)
 
+    torch.testing.assert_close(o_expected, o, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(dq_expected, q.grad, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(dk_expected, k.grad, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(dv_expected, v.grad, rtol=1e-2, atol=1e-2)
@@ -95,7 +98,7 @@ def test_flash_backward_pytorch(is_causal):
 )
 @pytest.mark.parametrize("is_causal", [False, True])
 def test_flash_backward_triton(is_causal):
-    dq_expected, dk_expected, dv_expected = flash_backward_results(lambda *args: _attention_and_lse(*args)[0], is_causal, device='cuda')
+    o_expected, dq_expected, dk_expected, dv_expected = flash_backward_results(lambda *args: _attention_and_lse(*args)[0], is_causal, device='cuda')
 
     q, k, v, do = _make_attn_inputs(device='cuda')
     get_flashattention_autograd_function_triton().apply(q, k, v, is_causal).backward(do)
