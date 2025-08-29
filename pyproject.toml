@@ -16,9 +16,9 @@ dependencies = [
     "wandb>=0.19.7",
     "pandas>=2",
     "ty>=0.0.1a16",
-    # "triton",
-    # "einops",
-    # "setuptools",
+    "triton",
+    "einops",
+    "setuptools",
 ]
 
 [build-system]
