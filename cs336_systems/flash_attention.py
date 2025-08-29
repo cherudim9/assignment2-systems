@@ -22,6 +22,7 @@ class FlashAttentionFunc(torch.autograd.Function):
 
         O = torch.empty_like(Q)
         L = torch.empty((bs, nq,))
+        mask = (torch.arange(nq)[:, None] >= torch.arange(nk)[None, :]).to(Q.device)
 
         for batch_idx in range(bs):
             for i in range(Tq):
@@ -33,6 +34,10 @@ class FlashAttentionFunc(torch.autograd.Function):
                     kj = K[batch_idx, j * Bk : min((j + 1) * Bk, nk), :]
                     vj = V[batch_idx, j * Bk : min((j + 1) * Bk, nk), :]
                     s = qi @ kj.T * isrd
+                    if is_causal:
+                        s = torch.where(
+                            mask[i * Bq : min((i + 1) * Bq, nq), j * Bk : min((j + 1) * Bk, nk)],
+                            s, -1e6)
 
                     mi_jm1 = mi.clone()
                     mi = torch.maximum(mi_jm1, torch.max(s, dim=1).values)
@@ -69,6 +74,7 @@ class FlashAttentionFunc(torch.autograd.Function):
         dQ = torch.zeros_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
+        mask = (torch.arange(nq)[:, None] >= torch.arange(nk)[None, :]).to(Q.device)
         for batch_idx in range(bs):
             D = torch.sum(O[batch_idx] * dO[batch_idx], dim=1)
             for j in range(Tk):
@@ -83,6 +89,11 @@ class FlashAttentionFunc(torch.autograd.Function):
                     Di = D[i * Bq : min((i + 1) * Bq, nq)]
 
                     s = qi @ kj.T * isrd
+                    if ctx.is_causal:
+                        s = torch.where(
+                            mask[i * Bq : min((i + 1) * Bq, nq), j * Bk : min((j + 1) * Bk, nk)],
+                            s, -1e6)
+
                     p = torch.exp(s - li[:, None])
                     dV_sum += p.T @ doi
                     dP = doi @ vj.T

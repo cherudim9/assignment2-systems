@@ -181,6 +181,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         dQ = torch.zeros_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
+        mask = (torch.arange(nq)[:, None] >= torch.arange(nk)[None, :]).to(Q.device)
         for batch_idx in range(bs):
             D = torch.sum(O[batch_idx] * dO[batch_idx], dim=1)
             for j in range(Tk):
@@ -195,6 +196,11 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
                     Di = D[i * Bq : min((i + 1) * Bq, nq)]
 
                     s = qi @ kj.T * isrd
+                    if ctx.is_causal:
+                        s = torch.where(
+                            mask[i * Bq : min((i + 1) * Bq, nq), j * Bk : min((j + 1) * Bk, nk)],
+                            s, -1e6)
+
                     p = torch.exp(s - li[:, None])
                     dV_sum += p.T @ doi
                     dP = doi @ vj.T
@@ -209,5 +215,3 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         dK = dK.view(ctx.K_shape)
         dV = dV.view(ctx.K_shape)
         return dQ, dK, dV, None
-
-
