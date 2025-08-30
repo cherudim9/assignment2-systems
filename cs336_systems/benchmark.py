@@ -1,10 +1,14 @@
+import pandas as pd
 import triton
 import torch
 from cs336_systems.flash_attention_triton import FlashAttentionTritonFunc
 
 
-DEVICE = 'mps'
-
+DEVICE = 'cuda'
+REP = 100
+WARMUP = 100
+N_HEADS = 16
+model_list = [('my triton', FlashAttentionTritonFunc.apply)]
 
 def test_timing_flash_forward_backward(
     model,
@@ -16,25 +20,58 @@ def test_timing_flash_forward_backward(
     q, k, v = torch.randn(
         3, n_heads, sequence_length, d_head, device=DEVICE, dtype=dtype, requires_grad=True)
     
-    if DEVICE == 'mps':
-        model = torch.compile(model, backend="aot_eager")
-    else:
-        model = torch.compile(model)
+    model = torch.compile(model)
 
     def test_forward_only():
         o = model(q, k, v, True)
-    results = triton.testing.do_bench(test_forward_only, rep=1000, warmup=100)
-    print(results)
+    forward_results = triton.testing.do_bench(test_forward_only, rep=REP, warmup=WARMUP)
+
+    o = model(q, k, v, True)
+    loss = o.sum()
+    def test_backward_only():
+        loss.zero_grad()
+        loss.backward()
+    backward_results = triton.testing.do_bench(test_backward_only, rep=REP, warmup=WARMUP)
+
+    def test_all():
+        o = model(q, k, v, True)
+        loss = o.sum()
+        loss.backward()
+    all_results = triton.testing.do_bench(test_all, rep=REP, warmup=WARMUP)
+    
+    return forward_results, backward_results, all_results
     
 
 def test():
-    test_timing_flash_forward_backward(
-        model=FlashAttentionTritonFunc.apply,
-        n_heads=16,
-        sequence_length=128,
-        d_head=16,
-        dtype=torch.float32,
-    )
+    # for sequence_length_i in range(7, 17):
+    results = []
+    for d_head_i in range(4, 6):
+        for sequence_length_i in range(7, 9):
+            # for dtype in [tf.float32, tf.bfloat16]:
+            for dtype in [torch.bfloat16]:
+                for model_name, model in model_list:
+                    d_head = 2 ** d_head_i
+                    sequence_length = 2 ** sequence_length_i
+                    print(f'testing: model=model_name, d_head={d_head}, sequence_length={sequence_length}...')
+                    res = test_timing_flash_forward_backward(
+                        model=model,
+                        n_heads=N_HEADS,
+                        sequence_length=sequence_length,
+                        d_head=d_head,
+                        dtype=dtype,
+                    )
+                    results.append({
+                        'model_name': model_name,
+                        'sequence_length': sequence_length,
+                        'd_head': d_head,
+                        'dtype': str(dtype),
+                        'forward_time': res[0],
+                        'backward_time': res[1],
+                        'all_time': res[2],
+                    })
+    df = pd.DataFrame(results)
+    print(df)
+    df.to_csv("benchmark_results.csv", index=False)
 
 
 if __name__ == "__main__":
