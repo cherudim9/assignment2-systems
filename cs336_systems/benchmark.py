@@ -51,7 +51,7 @@ def test_timing_flash_forward_backward(
 def test():
     results = []
     for d_head_i in range(4, 8):
-        for sequence_length_i in range(7, 17):
+        for sequence_length_i in range(7, 13):
             for dtype in [torch.float32, torch.bfloat16]:
                 for model_name, model in model_list:
                     d_head = 2 ** d_head_i
@@ -73,9 +73,9 @@ def test():
                         'backward_time': res[1],
                         'all_time': res[2],
                     })
-    df = pd.DataFrame(results)
-    print(df)
-    df.to_csv("benchmark_results.csv", index=False)
+                    df = pd.DataFrame(results)
+                    print(df)
+                    df.to_csv("benchmark_results.csv", index=False)
 
 
 if __name__ == "__main__":
