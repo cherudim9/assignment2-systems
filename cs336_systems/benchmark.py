@@ -6,10 +6,13 @@ from tests.test_attention import _attention_and_lse
 
 
 DEVICE = 'cuda'
-REP = 100
-WARMUP = 100
-N_HEADS = 4
-model_list = [('standard', _attention_and_lse), ('my triton', FlashAttentionTritonFunc.apply)]
+REP = 10000
+WARMUP = 1000
+N_HEADS = 16
+model_list = [
+    ('standard', lambda *args: _attention_and_lse(*args)[0]),
+    ('my triton', FlashAttentionTritonFunc.apply)
+]
 
 
 def test_timing_flash_forward_backward(
@@ -44,12 +47,10 @@ def test_timing_flash_forward_backward(
     
 
 def test():
-    # for sequence_length_i in range(7, 17):
     results = []
-    for d_head_i in range(4, 5):
-        for sequence_length_i in range(4, 5):
-            # for dtype in [tf.float32, tf.bfloat16]:
-            for dtype in [torch.bfloat16]:
+    for d_head_i in range(4, 8):
+        for sequence_length_i in range(7, 17):
+            for dtype in [torch.float32, torch.bfloat16]:
                 for model_name, model in model_list:
                     d_head = 2 ** d_head_i
                     sequence_length = 2 ** sequence_length_i
