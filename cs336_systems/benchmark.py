@@ -6,8 +6,8 @@ from tests.test_attention import _attention_and_lse
 
 
 DEVICE = 'cuda'
-REP = 10000
-WARMUP = 1000
+REP = 2000
+WARMUP = 500
 N_HEADS = 16
 model_list = [
     ('standard', lambda *args: _attention_and_lse(*args)[0]),
