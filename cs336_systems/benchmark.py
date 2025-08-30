@@ -7,8 +7,9 @@ from cs336_systems.flash_attention_triton import FlashAttentionTritonFunc
 DEVICE = 'cuda'
 REP = 100
 WARMUP = 100
-N_HEADS = 16
+N_HEADS = 4
 model_list = [('my triton', FlashAttentionTritonFunc.apply)]
+
 
 def test_timing_flash_forward_backward(
     model,
@@ -17,8 +18,8 @@ def test_timing_flash_forward_backward(
     sequence_length,
     dtype,
 ):
-    q, k, v = torch.randn(
-        3, n_heads, sequence_length, d_head, device=DEVICE, dtype=dtype, requires_grad=True)
+    q, k, v, grad_out = torch.randn(
+        4, n_heads, sequence_length, d_head, device=DEVICE, dtype=dtype, requires_grad=True)
     
     model = torch.compile(model)
 
@@ -30,7 +31,7 @@ def test_timing_flash_forward_backward(
     loss = o.sum()
     def test_backward_only():
         loss.zero_grad()
-        loss.backward()
+        loss.backward(grad_out, retain_graph=True)
     backward_results = triton.testing.do_bench(test_backward_only, rep=REP, warmup=WARMUP)
 
     def test_all():
@@ -45,14 +46,14 @@ def test_timing_flash_forward_backward(
 def test():
     # for sequence_length_i in range(7, 17):
     results = []
-    for d_head_i in range(4, 6):
-        for sequence_length_i in range(7, 9):
+    for d_head_i in range(4, 5):
+        for sequence_length_i in range(4, 5):
             # for dtype in [tf.float32, tf.bfloat16]:
-            for dtype in [torch.bfloat16]:
+            for dtype in [torch.float32]:
                 for model_name, model in model_list:
                     d_head = 2 ** d_head_i
                     sequence_length = 2 ** sequence_length_i
-                    print(f'testing: model=model_name, d_head={d_head}, sequence_length={sequence_length}...')
+                    print(f'testing: model={model_name}, d_head={d_head}, sequence_length={sequence_length}...')
                     res = test_timing_flash_forward_backward(
                         model=model,
                         n_heads=N_HEADS,
