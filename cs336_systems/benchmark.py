@@ -8,9 +8,9 @@ from tests.test_attention import _attention_and_lse
 
 torch._functorch.config.donated_buffer = False
 DEVICE = 'cuda'
-REP = 300
-WARMUP = 100
-N_HEADS = 4
+REP = 100
+WARMUP = 50
+N_HEADS = 2
 model_list = [
     ('standard', lambda *args: _attention_and_lse(*args)[0]),
     ('my triton', FlashAttentionTritonFunc.apply)
