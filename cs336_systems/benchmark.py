@@ -2,13 +2,14 @@ import pandas as pd
 import triton
 import torch
 from cs336_systems.flash_attention_triton import FlashAttentionTritonFunc
+from tests.test_attention import _attention_and_lse
 
 
 DEVICE = 'cuda'
 REP = 100
 WARMUP = 100
 N_HEADS = 4
-model_list = [('my triton', FlashAttentionTritonFunc.apply)]
+model_list = [('standard', _attention_and_lse), ('my triton', FlashAttentionTritonFunc.apply)]
 
 
 def test_timing_flash_forward_backward(
