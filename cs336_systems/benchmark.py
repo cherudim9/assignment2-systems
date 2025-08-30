@@ -24,14 +24,13 @@ def test_timing_flash_forward_backward(
     model = torch.compile(model)
 
     def test_forward_only():
-        o = model(q, k, v, True)
+        model(q, k, v, True)
     forward_results = triton.testing.do_bench(test_forward_only, rep=REP, warmup=WARMUP)
 
     o = model(q, k, v, True)
     loss = o.sum()
     def test_backward_only():
-        loss.zero_grad()
-        loss.backward(grad_out, retain_graph=True)
+        loss.backward(retain_graph=True)
     backward_results = triton.testing.do_bench(test_backward_only, rep=REP, warmup=WARMUP)
 
     def test_all():
