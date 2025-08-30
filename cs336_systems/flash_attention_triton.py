@@ -5,8 +5,8 @@ import triton.language as tl
 from einops import rearrange
 
 
-Bq = 16
-Bk = 16
+Bq = 32
+Bk = 32
 
 
 @triton.jit

@@ -8,9 +8,9 @@ from tests.test_attention import _attention_and_lse
 
 torch._functorch.config.donated_buffer = False
 DEVICE = 'cuda'
-REP = 2000
-WARMUP = 500
-N_HEADS = 16
+REP = 300
+WARMUP = 100
+N_HEADS = 4
 model_list = [
     ('standard', lambda *args: _attention_and_lse(*args)[0]),
     ('my triton', FlashAttentionTritonFunc.apply)
@@ -56,7 +56,7 @@ def test():
                 for model_name, model in model_list:
                     d_head = 2 ** d_head_i
                     sequence_length = 2 ** sequence_length_i
-                    print(f'testing: model={model_name}, d_head={d_head}, sequence_length={sequence_length}...')
+                    print(f'testing: model={model_name}, d_head={d_head}, sequence_length={sequence_length}, dtype={dtype}...')
                     res = test_timing_flash_forward_backward(
                         model=model,
                         n_heads=N_HEADS,
