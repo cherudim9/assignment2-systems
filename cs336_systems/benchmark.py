@@ -1,10 +1,12 @@
 import pandas as pd
 import triton
 import torch
+import torch._functorch.config
 from cs336_systems.flash_attention_triton import FlashAttentionTritonFunc
 from tests.test_attention import _attention_and_lse
 
 
+torch._functorch.config.donated_buffer = False
 DEVICE = 'cuda'
 REP = 2000
 WARMUP = 500
