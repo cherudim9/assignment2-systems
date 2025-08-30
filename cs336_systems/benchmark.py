@@ -18,8 +18,8 @@ def test_timing_flash_forward_backward(
     sequence_length,
     dtype,
 ):
-    q, k, v, grad_out = torch.randn(
-        4, n_heads, sequence_length, d_head, device=DEVICE, dtype=dtype, requires_grad=True)
+    q, k, v = torch.randn(
+        3, n_heads, sequence_length, d_head, device=DEVICE, dtype=dtype, requires_grad=True)
     
     model = torch.compile(model)
 
@@ -48,7 +48,7 @@ def test():
     for d_head_i in range(4, 5):
         for sequence_length_i in range(4, 5):
             # for dtype in [tf.float32, tf.bfloat16]:
-            for dtype in [torch.float32]:
+            for dtype in [torch.bfloat16]:
                 for model_name, model in model_list:
                     d_head = 2 ** d_head_i
                     sequence_length = 2 ** sequence_length_i
