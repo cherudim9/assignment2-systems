@@ -308,6 +308,38 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         Q, K, V, O, L = ctx.saved_tensors
 
         # recover all parameters
+        _, nq, d = Q.shape
+        nk = K.shape[1]
+        scale = d ** -0.5
+
+        dQ = torch.zeros_like(Q)
+        dK = torch.empty_like(K)
+        dV = torch.empty_like(V)
+        mask = (torch.arange(nq)[:, None] >= torch.arange(nk)[None, :]).to(Q.device)
+
+        S = einsum(Q, K, "bs nq d, bs nk d -> bs nq nk") * scale
+        if ctx.is_causal:
+            S = torch.where(mask[None, :], S, float("-inf"))
+        P = torch.exp(S - L[:, :, None])
+        dV = einsum(P, dO, "bs nq nk, bs nq d -> bs nk d")
+        dP = einsum(dO, V, "bs nq d, bs nk d -> bs nq nk")
+
+        D = torch.sum(O * dO, dim=-1)
+        dS = P * (dP - D[:, :, None])
+
+        dQ = einsum(dS, K, "bs nq nk, bs nk d -> bs nq d") * scale
+        dK = einsum(dS, Q, "bs nq nk, bs nq d -> bs nk d") * scale
+
+        dQ = dQ.view(ctx.Q_shape)
+        dK = dK.view(ctx.K_shape)
+        dV = dV.view(ctx.K_shape)
+        return dQ, dK, dV, None
+
+    @staticmethod
+    def backward_triton(ctx, dO):
+        Q, K, V, O, L = ctx.saved_tensors
+
+        # recover all parameters
         Bq, Bk = ctx.Bq, ctx.Bk
         bs, nq, d = Q.shape
         nk = K.shape[1]
@@ -348,7 +380,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         return dQ, dK, dV, None
     
     @staticmethod
-    def backward_pytorch(ctx, dO):
+    def backward_triton_in_pytorch(ctx, dO):
         Q, K, V, O, L = ctx.saved_tensors
 
         # recover all parameters

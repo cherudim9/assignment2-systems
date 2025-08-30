@@ -1,6 +1,6 @@
 import math
 import torch
-from einops import rearrange
+from einops import rearrange, einsum
 
 Bq = 16
 Bk = 16
@@ -64,45 +64,27 @@ class FlashAttentionFunc(torch.autograd.Function):
         Q, K, V, O, L = ctx.saved_tensors
 
         # recover all parameters
-        Bq, Bk = ctx.Bq, ctx.Bk
-        bs, nq, d = Q.shape
+        _, nq, d = Q.shape
         nk = K.shape[1]
-        Tq = math.ceil(nq/Bq)
-        Tk = math.ceil(nk/Bk)
-        isrd = d ** -0.5
+        scale = d ** -0.5
 
         dQ = torch.zeros_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
         mask = (torch.arange(nq)[:, None] >= torch.arange(nk)[None, :]).to(Q.device)
-        for batch_idx in range(bs):
-            D = torch.sum(O[batch_idx] * dO[batch_idx], dim=1)
-            for j in range(Tk):
-                kj = K[batch_idx, j * Bk : min((j + 1) * Bk, nk), :]
-                vj = V[batch_idx, j * Bk : min((j + 1) * Bk, nk), :]
-                dK_sum = torch.zeros_like(kj)
-                dV_sum = torch.zeros_like(vj)
-                for i in range(Tq):
-                    qi = Q[batch_idx, i * Bq : min((i + 1) * Bq, nq), :]
-                    doi = dO[batch_idx, i * Bq : min((i + 1) * Bq, nq), :]
-                    li = L[batch_idx, i * Bq : min((i + 1) * Bq, nq)]
-                    Di = D[i * Bq : min((i + 1) * Bq, nq)]
 
-                    s = qi @ kj.T * isrd
-                    if ctx.is_causal:
-                        s = torch.where(
-                            mask[i * Bq : min((i + 1) * Bq, nq), j * Bk : min((j + 1) * Bk, nk)],
-                            s, -1e6)
+        S = einsum(Q, K, "bs nq d, bs nk d -> bs nq nk") * scale
+        if ctx.is_causal:
+            S = torch.where(mask[None, :], S, float("-inf"))
+        P = torch.exp(S - L[:, :, None])
+        dV = einsum(P, dO, "bs nq nk, bs nq d -> bs nk d")
+        dP = einsum(dO, V, "bs nq d, bs nk d -> bs nq nk")
 
-                    p = torch.exp(s - li[:, None])
-                    dV_sum += p.T @ doi
-                    dP = doi @ vj.T
-                    ds = p * (dP - Di[:, None]) * isrd
-                    dQ[batch_idx, i * Bq : min((i + 1) * Bq, nq), :] += ds @ kj
-                    dK_sum += ds.T @ qi
+        D = torch.sum(O * dO, dim=-1)
+        dS = P * (dP - D[:, :, None])
 
-                dK[batch_idx, j * Bk : min((j + 1) * Bk, nk), :] = dK_sum
-                dV[batch_idx, j * Bk : min((j + 1) * Bk, nk), :] = dV_sum
+        dQ = einsum(dS, K, "bs nq nk, bs nk d -> bs nq d") * scale
+        dK = einsum(dS, Q, "bs nq nk, bs nq d -> bs nk d") * scale
 
         dQ = dQ.view(ctx.Q_shape)
         dK = dK.view(ctx.K_shape)
