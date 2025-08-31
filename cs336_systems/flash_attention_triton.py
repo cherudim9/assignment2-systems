@@ -9,6 +9,16 @@ Bq = 32
 Bk = 32
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'Q_TILE_SIZE': 32, 'K_TILE_SIZE': 32}, num_warps=1),
+        triton.Config({'Q_TILE_SIZE': 64, 'K_TILE_SIZE': 64}, num_warps=1),
+        triton.Config({'Q_TILE_SIZE': 64, 'K_TILE_SIZE': 64}, num_warps=2),
+        triton.Config({'Q_TILE_SIZE': 128, 'K_TILE_SIZE': 128}, num_warps=2),
+        triton.Config({'Q_TILE_SIZE': 128, 'K_TILE_SIZE': 128}, num_warps=4),
+    ],
+    key=['N_QUERIES', 'N_KEYS']
+)
 @triton.jit
 def flash_fwd_kernel(
     Q_ptr, K_ptr, V_ptr,
@@ -126,6 +136,16 @@ def flash_fwd_kernel(
     tl.store(L_block_ptr, l.to(L_block_ptr.dtype.element_ty), boundary_check=(0,))
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'Bq': 32, 'Bk': 32}, num_warps=1),
+        triton.Config({'Bq': 64, 'Bk': 64}, num_warps=1),
+        triton.Config({'Bq': 64, 'Bk': 64}, num_warps=2),
+        triton.Config({'Bq': 128, 'Bk': 128}, num_warps=2),
+        triton.Config({'Bq': 128, 'Bk': 128}, num_warps=4),
+    ],
+    key=['nq', 'nk']
+)
 @triton.jit
 def flash_bwd_kernel_pass1(
     Q_ptr, K_ptr, V_ptr,
@@ -273,6 +293,16 @@ def flash_bwd_kernel_pass1(
     tl.store(dV_block_ptr, dV_sum.to(dV_block_ptr.dtype.element_ty), boundary_check=(0,1))
 
 
+@triton.autotune(
+    configs=[
+        triton.Config({'Bq': 32, 'Bk': 32}, num_warps=1),
+        triton.Config({'Bq': 64, 'Bk': 64}, num_warps=1),
+        triton.Config({'Bq': 64, 'Bk': 64}, num_warps=2),
+        triton.Config({'Bq': 128, 'Bk': 128}, num_warps=2),
+        triton.Config({'Bq': 128, 'Bk': 128}, num_warps=4),
+    ],
+    key=['nq', 'nk']
+)
 @triton.jit
 def flash_bwd_kernel_pass2(
     Q_ptr, K_ptr, V_ptr,
