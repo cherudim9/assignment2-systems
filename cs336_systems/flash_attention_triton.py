@@ -216,14 +216,14 @@ def flash_bwd_kernel_pass1(
             mask = tl.load(mask_block_ptr, boundary_check=(0,1), padding_option="zero")
             s = tl.where(mask, s, -1e6)
 
-        li =  tl.load(L_block_ptr, boundary_check=(0,1), padding_option="zero")
+        li =  tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
         p = tl.exp(s - li.expand_dims(axis=1))
         dV_sum = tl.dot(p.trans(), doi, acc=dV_sum)
 
         doi = tl.load(dO_block_ptr, boundary_check=(0,1), padding_option="zero")
         dP = tl.dot(doi, vj.trans())
 
-        Di = tl.load(D_block_ptr, boundary_check=(0,1), padding_option="zero")
+        Di = tl.load(D_block_ptr, boundary_check=(0,), padding_option="zero")
         ds = p * (dP - Di.expand_dims(axis=1)) * scale
         dK_sum = tl.dot(ds.trans(), qi, acc=dK_sum)
 
@@ -304,7 +304,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         return O
     
     @staticmethod
-    def backward(ctx, dO):
+    def backward_naive(ctx, dO):
         Q, K, V, O, L = ctx.saved_tensors
 
         # recover all parameters
@@ -336,7 +336,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         return dQ, dK, dV, None
 
     @staticmethod
-    def backward_triton(ctx, dO):
+    def backward(ctx, dO):
         Q, K, V, O, L = ctx.saved_tensors
 
         # recover all parameters
