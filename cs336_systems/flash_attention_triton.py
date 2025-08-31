@@ -218,9 +218,9 @@ def flash_bwd_kernel_pass1(
 
         li =  tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
         p = tl.exp(s - li.expand_dims(axis=1))
-        dV_sum = tl.dot(p.trans(), doi, acc=dV_sum)
-
+        
         doi = tl.load(dO_block_ptr, boundary_check=(0,1), padding_option="zero")
+        dV_sum = tl.dot(p.trans(), doi, acc=dV_sum)
         dP = tl.dot(doi, vj.trans())
 
         Di = tl.load(D_block_ptr, boundary_check=(0,), padding_option="zero")
