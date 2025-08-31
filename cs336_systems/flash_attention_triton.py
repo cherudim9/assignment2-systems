@@ -121,7 +121,7 @@ def flash_fwd_kernel(
 def flash_bwd_kernel_pass1(
     Q_ptr, K_ptr, V_ptr,
     dO_ptr, L_ptr, D_ptr, mask_ptr,
-    dQ_ptr, dK_ptr, dV_ptr,
+    dK_ptr, dV_ptr,
     stride_qb, stride_qq, stride_qd,
     stride_kb, stride_kk, stride_kd,
     stride_vb, stride_vk, stride_vd,
@@ -129,7 +129,6 @@ def flash_bwd_kernel_pass1(
     stride_lb, stride_lq,
     stride_db, stride_dq,
     stride_mq, stride_mk,
-    stride_dqb, stride_dqq, stride_dqd,
     stride_dkb, stride_dkk, stride_dkd,
     stride_dvb, stride_dvk, stride_dvd,
     nq, nk,
@@ -254,6 +253,125 @@ def flash_bwd_kernel_pass1(
     tl.store(dV_block_ptr, dV_sum.to(dV_block_ptr.dtype.element_ty), boundary_check=(0,1))
 
 
+@triton.jit
+def flash_bwd_kernel_pass2(
+    Q_ptr, K_ptr, V_ptr,
+    dO_ptr, L_ptr, D_ptr, mask_ptr,
+    dQ_ptr,
+    stride_qb, stride_qq, stride_qd,
+    stride_kb, stride_kk, stride_kd,
+    stride_vb, stride_vk, stride_vd,
+    stride_dob, stride_doq, stride_dod,
+    stride_lb, stride_lq,
+    stride_db, stride_dq,
+    stride_mq, stride_mk,
+    stride_dqb, stride_dqq, stride_dqd,
+    nq, nk,
+    scale, 
+    D: tl.constexpr,
+    Bq: tl.constexpr, Bk: tl.constexpr,
+    is_causal: tl.constexpr,
+):
+    batch_index = tl.program_id(0)
+    query_tile_index = tl.program_id(1)
+
+    Q_block_ptr = tl.make_block_ptr(
+        Q_ptr + batch_index * stride_qb,
+        shape=(nq, D),
+        strides=(stride_qq, stride_qd),
+        offsets=(query_tile_index * Bq, 0),
+        block_shape=(Bq, D),
+        order=(1, 0),
+    )
+    qi =  tl.load(Q_block_ptr, boundary_check=(0,1), padding_option="zero")
+
+    dO_block_ptr = tl.make_block_ptr(
+        dO_ptr + batch_index * stride_dob,
+        shape=(nq, D),
+        strides=(stride_doq, stride_dod),
+        offsets=(query_tile_index * Bq, 0),
+        block_shape=(Bq, D),
+        order=(1, 0),
+    )
+    doi = tl.load(dO_block_ptr, boundary_check=(0, 1), padding_option="zero")
+
+    L_block_ptr = tl.make_block_ptr(
+        L_ptr + batch_index * stride_lb,
+        shape=(nq,),
+        strides=(stride_lq,),
+        offsets=(query_tile_index * Bq,),
+        block_shape=(Bq,),
+        order=(0,),
+    )
+    li =  tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
+
+    D_block_ptr = tl.make_block_ptr(
+        D_ptr + batch_index * stride_db,
+        shape=(nq,),
+        strides=(stride_dq,),
+        offsets=(query_tile_index * Bq,),
+        block_shape=(Bq,),
+        order=(0,),
+    )
+    Di = tl.load(D_block_ptr, boundary_check=(0,), padding_option="zero")
+
+    mask_block_ptr = tl.make_block_ptr(
+        mask_ptr,
+        shape=(nq, nk),
+        strides=(stride_mq, stride_mk),
+        offsets=(query_tile_index * Bq, 0),
+        block_shape=(Bq, Bk),
+        order=(1, 0),
+    )
+
+    K_block_ptr = tl.make_block_ptr(
+        K_ptr + batch_index * stride_kb,
+        shape=(nk, D),
+        strides=(stride_kk, stride_kd),
+        offsets=(0, 0),
+        block_shape=(Bk, D),
+        order=(1, 0),
+    )
+
+    V_block_ptr = tl.make_block_ptr(
+        V_ptr + batch_index * stride_vb,
+        shape=(nk, D),
+        strides=(stride_vk, stride_vd),
+        offsets=(0, 0),
+        block_shape=(Bk, D),
+        order=(1, 0),
+    )
+
+    dQ_sum = tl.zeros((Bq, D), dtype=tl.float32)
+
+    for _ in range(tl.cdiv(nk, Bk)):
+        kj = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        vj = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        s = tl.dot(qi, kj.trans()) * scale
+        if is_causal:
+            mask = tl.load(mask_block_ptr, boundary_check=(0, 1), padding_option="zero")
+            s = tl.where(mask, s, -1e6)
+
+        p = tl.exp(s - li.expand_dims(axis=1))
+        dP = tl.dot(doi, vj.trans())
+        ds = p * (dP - Di.expand_dims(axis=1)) * scale
+        dQ_sum = tl.dot(ds, kj, acc=dQ_sum)
+
+        K_block_ptr = K_block_ptr.advance((Bk, 0))
+        V_block_ptr = V_block_ptr.advance((Bk, 0))
+        mask_block_ptr = mask_block_ptr.advance((0, Bk))
+
+    dQ_block_ptr = tl.make_block_ptr(
+        dQ_ptr + batch_index * stride_dqb,
+        shape=(nq, D),
+        strides=(stride_dqq, stride_dqd),
+        offsets=(query_tile_index * Bq, 0),
+        block_shape=(Bq, D),
+        order=(1, 0),
+    )
+    tl.store(dQ_block_ptr, dQ_sum.to(dQ_block_ptr.dtype.element_ty), boundary_check=(0,1))
+
+
 class FlashAttentionTritonFunc(torch.autograd.Function):
     @staticmethod
     def forward(ctx, Q, K, V, is_causal=False):
@@ -348,7 +466,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         scale = d ** -0.5
         is_causal = ctx.is_causal
 
-        dQ = torch.zeros_like(Q)
+        dQ = torch.empty_like(Q)
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
         D = torch.sum(O * dO, dim=-1)
@@ -356,7 +474,26 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         flash_bwd_kernel_pass1[(bs, Tk)](
             Q, K, V,
             dO, L, D, mask,
-            dQ, dK, dV,
+            dK, dV,
+            Q.stride(0), Q.stride(1), Q.stride(2),
+            K.stride(0), K.stride(1), K.stride(2),
+            V.stride(0), V.stride(1), V.stride(2),
+            dO.stride(0), dO.stride(1), dO.stride(2),
+            L.stride(0), L.stride(1),
+            D.stride(0), D.stride(1),
+            mask.stride(0), mask.stride(1),
+            dK.stride(0), dK.stride(1), dK.stride(2),
+            dV.stride(0), dV.stride(1), dV.stride(2),
+            nq=nq, nk=nk,
+            scale=scale,
+            D=d,
+            Bq=Bq, Bk=Bk,
+            is_causal=is_causal,
+        )
+        flash_bwd_kernel_pass2[(bs, Tq)](
+            Q, K, V,
+            dO, L, D, mask,
+            dQ,
             Q.stride(0), Q.stride(1), Q.stride(2),
             K.stride(0), K.stride(1), K.stride(2),
             V.stride(0), V.stride(1), V.stride(2),
@@ -365,8 +502,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             D.stride(0), D.stride(1),
             mask.stride(0), mask.stride(1),
             dQ.stride(0), dQ.stride(1), dQ.stride(2),
-            dK.stride(0), dK.stride(1), dK.stride(2),
-            dV.stride(0), dV.stride(1), dV.stride(2),
             nq=nq, nk=nk,
             scale=scale,
             D=d,
