@@ -55,8 +55,8 @@ def flash_fwd_kernel(
     is_causal: tl.constexpr,
 ):
 
-    batch_index = tl.program_id(0)
-    query_tile_index = tl.program_id(1)
+    query_tile_index = tl.program_id(0)
+    batch_index = tl.program_id(1)
     
     # Offset each pointer with the corresponding batch index\
     # multiplied with the batch stride for each tensor
@@ -98,20 +98,20 @@ def flash_fwd_kernel(
 
     for _ in range(tl.cdiv(nk, Bk)):
         kj = tl.load(K_block_ptr)
-        vj = tl.load(V_block_ptr)
-
         s = tl.dot(qi, kj.T) * scale
         if is_causal:
             mask_k = mask_k_base + _ * Bk
-            s = tl.where(mask_q[:, None] >=  mask_k[None, :], s, -1e6)
+            s = s + tl.where(mask_q[:, None] >=  mask_k[None, :], 0, -1e6)
         prev_m = m
         m = tl.maximum(prev_m, tl.max(s, axis=1))
         p = tl.exp(s - m[:, None])
         delta = tl.exp(prev_m - m)
-        l = l * delta + tl.sum(p, axis=1)
         o = o * delta[:, None]
-        o = tl.dot(p.to(dtype=V_block_ptr.dtype.element_ty), vj, acc=o)
+        p = p.to(dtype=V_block_ptr.dtype.element_ty)
+        vj = tl.load(V_block_ptr)
+        o = tl.dot(p, vj, acc=o)
 
+        l = l * delta + tl.sum(p, axis=1)
         K_block_ptr = K_block_ptr.advance((Bk, 0))
         V_block_ptr = V_block_ptr.advance((Bk, 0))
 
@@ -162,8 +162,8 @@ def flash_bwd_kernel_pass1(
     Bq: tl.constexpr, Bk: tl.constexpr,
     is_causal: tl.constexpr,
 ):
-    batch_index = tl.program_id(0)
-    key_tile_index = tl.program_id(1)
+    key_tile_index = tl.program_id(0)
+    batch_index = tl.program_id(1)
 
     K_block_ptr = tl.make_block_ptr(
         K_ptr + batch_index * stride_kb,
@@ -223,13 +223,13 @@ def flash_bwd_kernel_pass1(
 
     mask_k = key_tile_index * Bk + tl.arange(0, Bk)
     mask_q_base = tl.arange(0, Bq)
-    scale = tl.full([], D ** -0.5, tl.float32)
+    scale = D ** -0.5
     dK_sum = tl.zeros((Bk, D), dtype=tl.float32)
     dV_sum = tl.zeros((Bk, D), dtype=tl.float32)
 
     for _ in range(tl.cdiv(nq, Bq)):
         qi =  tl.load(Q_block_ptr, boundary_check=(0,1), padding_option="zero")
-        s = tl.dot(qi, kj.trans()) * scale
+        s = tl.dot(qi, kj.T) * scale
         if is_causal:
             mask_q = mask_q_base + _ * Bq
             s = tl.where(mask_q[:, None] >=  mask_k[None, :], s, -1e6)
@@ -239,13 +239,13 @@ def flash_bwd_kernel_pass1(
         
         doi = tl.load(dO_block_ptr, boundary_check=(0,1), padding_option="zero")
         p = p.to(Q_block_ptr.dtype.element_ty)
-        dV_sum = tl.dot(p.trans(), doi, acc=dV_sum)
-        dP = tl.dot(doi, vj.trans())
+        dV_sum = tl.dot(p.T, doi, acc=dV_sum)
+        dP = tl.dot(doi, vj.T)
 
         Di = tl.load(D_block_ptr, boundary_check=(0,), padding_option="zero")
         ds = p * (dP - Di[:, None]) * scale
         ds = ds.to(Q_block_ptr.dtype.element_ty)
-        dK_sum = tl.dot(ds.trans(), qi, acc=dK_sum)
+        dK_sum = tl.dot(ds.T, qi, acc=dK_sum)
 
         Q_block_ptr = Q_block_ptr.advance((Bq, 0))
         dO_block_ptr = dO_block_ptr.advance((Bq, 0))
@@ -295,8 +295,8 @@ def flash_bwd_kernel_pass2(
     Bq: tl.constexpr, Bk: tl.constexpr,
     is_causal: tl.constexpr,
 ):
-    batch_index = tl.program_id(0)
-    query_tile_index = tl.program_id(1)
+    query_tile_index = tl.program_id(0)
+    batch_index = tl.program_id(1)
 
     Q_block_ptr = tl.make_block_ptr(
         Q_ptr + batch_index * stride_qb,
@@ -360,19 +360,19 @@ def flash_bwd_kernel_pass2(
         order=(1, 0),
     )
 
-    scale = tl.full([], D ** -0.5, tl.float32)
+    scale = D ** -0.5
     dQ_sum = tl.zeros((Bq, D), dtype=tl.float32)
 
     for _ in range(tl.cdiv(nk, Bk)):
         kj = tl.load(K_block_ptr, boundary_check=(0, 1), padding_option="zero")
-        vj = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
-        s = tl.dot(qi, kj.trans()) * scale
+        s = tl.dot(qi, kj.T) * scale
         if is_causal:
             mask_k = mask_k_base + _ * Bk
             s = tl.where(mask_q[:, None] >=  mask_k[None, :], s, -1e6)
 
         p = tl.exp(s - li[:, None])
-        dP = tl.dot(doi, vj.trans())
+        vj = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        dP = tl.dot(doi, vj.T)
         ds = p * (dP - Di[:, None]) * scale
         ds = ds.to(Q_block_ptr.dtype.element_ty)
         dQ_sum = tl.dot(ds, kj, acc=dQ_sum)
@@ -409,7 +409,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         L = torch.empty((bs, nq,), dtype=Q.dtype, device=Q.device)
 
         def grid(META):
-            return (bs, triton.cdiv(nq, META["Bq"]))
+            return (triton.cdiv(nq, META["Bq"]), bs)
         flash_fwd_kernel[grid](
             Q, K, V,
             O, L,
@@ -478,7 +478,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         dV = torch.empty_like(V)
         D = torch.sum(O * dO, dim=-1)
         def grid_k(META):
-            return (bs, triton.cdiv(nk, META["Bk"]))
+            return (triton.cdiv(nk, META["Bk"]), bs)
         flash_bwd_kernel_pass1[grid_k](
             Q, K, V,
             dO, L, D,
@@ -496,7 +496,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             is_causal=is_causal,
         )
         def grid_q(META):
-            return (bs, triton.cdiv(nq, META["Bq"]))
+            return (triton.cdiv(nq, META["Bq"]), bs)
         flash_bwd_kernel_pass2[grid_q](
             Q, K, V,
             dO, L, D,
