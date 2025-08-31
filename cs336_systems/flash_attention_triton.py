@@ -13,7 +13,7 @@ Bk = 32
 def flash_fwd_kernel(
     Q_ptr, K_ptr, V_ptr,
     O_ptr, L_ptr,
-    mask_ptr,
+    mask_q_ptr, mask_k_ptr,
     stride_qb, stride_qq, stride_qd,
     stride_kb, stride_kk, stride_kd,
     stride_vb, stride_vk, stride_vd,
@@ -61,13 +61,22 @@ def flash_fwd_kernel(
         order=(1, 0),
     )
 
-    mask_block_ptr = tl.make_block_ptr(
-        mask_ptr,
-        shape=(N_QUERIES, N_KEYS),
-        strides=(stride_mq, stride_mk),
-        offsets=(query_tile_index * Q_TILE_SIZE, 0),
-        block_shape=(Q_TILE_SIZE, K_TILE_SIZE),
-        order=(1, 0),
+    mask_q_block_ptr = tl.make_block_ptr(
+        mask_q_ptr,
+        shape=(N_QUERIES,),
+        strides=(stride_mq,),
+        offsets=(query_tile_index * Q_TILE_SIZE,),
+        block_shape=(Q_TILE_SIZE,),
+        order=(0,),
+    )
+    mask_q = tl.load(mask_q_block_ptr, boundary_check=(0,), padding_option="zero")
+    mask_k_block_ptr = tl.make_block_ptr(
+        mask_k_ptr,
+        shape=(N_KEYS,),
+        strides=(stride_mk,),
+        offsets=(0,),
+        block_shape=(K_TILE_SIZE,),
+        order=(0,),
     )
 
     o = tl.zeros((Q_TILE_SIZE, D), dtype=tl.float32)
@@ -80,8 +89,8 @@ def flash_fwd_kernel(
 
         s = tl.dot(qi, kj.trans()) * scale
         if is_causal:
-            mask = tl.load(mask_block_ptr, boundary_check=(0,1), padding_option="zero")
-            s = tl.where(mask, s, -1e6)
+            mask_k = tl.load(mask_k_block_ptr, boundary_check=(0,), padding_option="zero")
+            s = tl.where(mask_q[:, None] >=  mask_k[None, :], s, -1e6)
         prev_m = m
         m = tl.maximum(prev_m, tl.max(s, axis=1))
         p = tl.exp(s - m.expand_dims(axis=1))
@@ -91,7 +100,7 @@ def flash_fwd_kernel(
 
         K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
         V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
-        mask_block_ptr = mask_block_ptr.advance((0, K_TILE_SIZE))
+        mask_k_block_ptr = mask_k_block_ptr.advance((K_TILE_SIZE,))
 
     o = (1.0 / l).expand_dims(axis=1) * o
     l = tl.log(l) + m
@@ -120,7 +129,7 @@ def flash_fwd_kernel(
 @triton.jit
 def flash_bwd_kernel_pass1(
     Q_ptr, K_ptr, V_ptr,
-    dO_ptr, L_ptr, D_ptr, mask_ptr,
+    dO_ptr, L_ptr, D_ptr, mask_q_ptr, mask_k_ptr,
     dK_ptr, dV_ptr,
     stride_qb, stride_qq, stride_qd,
     stride_kb, stride_kk, stride_kd,
@@ -196,14 +205,23 @@ def flash_bwd_kernel_pass1(
         order=(0,),
     )
 
-    mask_block_ptr = tl.make_block_ptr(
-        mask_ptr,
-        shape=(nq, nk),
-        strides=(stride_mq, stride_mk),
-        offsets=(0, key_tile_index * Bk),
-        block_shape=(Bq, Bk),
-        order=(1, 0),
+    mask_q_block_ptr = tl.make_block_ptr(
+        mask_q_ptr,
+        shape=(nq,),
+        strides=(stride_mq,),
+        offsets=(0,),
+        block_shape=(Bq,),
+        order=(0,),
     )
+    mask_k_block_ptr = tl.make_block_ptr(
+        mask_k_ptr,
+        shape=(nk,),
+        strides=(stride_mk,),
+        offsets=(key_tile_index * Bk,),
+        block_shape=(Bk,),
+        order=(0,),
+    )
+    mask_k = tl.load(mask_k_block_ptr, boundary_check=(0,), padding_option="zero")
 
     dK_sum = tl.zeros((Bk, D), dtype=tl.float32)
     dV_sum = tl.zeros((Bk, D), dtype=tl.float32)
@@ -212,8 +230,8 @@ def flash_bwd_kernel_pass1(
         qi =  tl.load(Q_block_ptr, boundary_check=(0,1), padding_option="zero")
         s = tl.dot(qi, kj.trans()) * scale
         if is_causal:
-            mask = tl.load(mask_block_ptr, boundary_check=(0,1), padding_option="zero")
-            s = tl.where(mask, s, -1e6)
+            mask_q = tl.load(mask_q_block_ptr, boundary_check=(0,), padding_option="zero")
+            s = tl.where(mask_q[:, None] >=  mask_k[None, :], s, -1e6)
 
         li =  tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
         p = tl.exp(s - li.expand_dims(axis=1))
@@ -232,7 +250,7 @@ def flash_bwd_kernel_pass1(
         dO_block_ptr = dO_block_ptr.advance((Bq, 0))
         L_block_ptr = L_block_ptr.advance((Bq,))
         D_block_ptr = D_block_ptr.advance((Bq,))
-        mask_block_ptr = mask_block_ptr.advance((Bq, 0))
+        mask_q_block_ptr = mask_q_block_ptr.advance((Bq,))
 
     dK_block_ptr = tl.make_block_ptr(
         dK_ptr + batch_index * stride_dkb,
@@ -258,7 +276,7 @@ def flash_bwd_kernel_pass1(
 @triton.jit
 def flash_bwd_kernel_pass2(
     Q_ptr, K_ptr, V_ptr,
-    dO_ptr, L_ptr, D_ptr, mask_ptr,
+    dO_ptr, L_ptr, D_ptr, mask_q_ptr, mask_k_ptr,
     dQ_ptr,
     stride_qb, stride_qq, stride_qd,
     stride_kb, stride_kk, stride_kd,
@@ -317,14 +335,23 @@ def flash_bwd_kernel_pass2(
     )
     Di = tl.load(D_block_ptr, boundary_check=(0,), padding_option="zero")
 
-    mask_block_ptr = tl.make_block_ptr(
-        mask_ptr,
-        shape=(nq, nk),
-        strides=(stride_mq, stride_mk),
-        offsets=(query_tile_index * Bq, 0),
-        block_shape=(Bq, Bk),
-        order=(1, 0),
+    mask_q_block_ptr = tl.make_block_ptr(
+        mask_q_ptr,
+        shape=(nq,),
+        strides=(stride_mq,),
+        offsets=(query_tile_index * Bq,),
+        block_shape=(Bq,),
+        order=(0,),
     )
+    mask_q= tl.load(mask_q_block_ptr, boundary_check=(0,), padding_option="zero")
+    mask_k_block_ptr = tl.make_block_ptr(
+        mask_k_ptr,
+        shape=(nk,),
+        strides=(stride_mk,),
+        offsets=(0,),
+        block_shape=(Bk,),
+        order=(0,),
+    )  
 
     K_block_ptr = tl.make_block_ptr(
         K_ptr + batch_index * stride_kb,
@@ -351,8 +378,8 @@ def flash_bwd_kernel_pass2(
         vj = tl.load(V_block_ptr, boundary_check=(0, 1), padding_option="zero")
         s = tl.dot(qi, kj.trans()) * scale
         if is_causal:
-            mask = tl.load(mask_block_ptr, boundary_check=(0, 1), padding_option="zero")
-            s = tl.where(mask, s, -1e6)
+            mask_k = tl.load(mask_k_block_ptr, boundary_check=(0,), padding_option="zero")
+            s = tl.where(mask_q[:, None] >=  mask_k[None, :], s, -1e6)
 
         p = tl.exp(s - li.expand_dims(axis=1))
         dP = tl.dot(doi, vj.trans())
@@ -362,7 +389,7 @@ def flash_bwd_kernel_pass2(
 
         K_block_ptr = K_block_ptr.advance((Bk, 0))
         V_block_ptr = V_block_ptr.advance((Bk, 0))
-        mask_block_ptr = mask_block_ptr.advance((0, Bk))
+        mask_k_block_ptr = mask_k_block_ptr.advance((Bk,))
 
     dQ_block_ptr = tl.make_block_ptr(
         dQ_ptr + batch_index * stride_dqb,
@@ -393,18 +420,19 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
 
         O = torch.empty_like(Q)
         L = torch.empty((bs, N_QUERIES,), dtype=Q.dtype, device=Q.device)
-        mask = torch.arange(N_QUERIES, device=Q.device)[:, None] >= torch.arange(N_KEYS, device=Q.device)[None, :]
+        mask_q = torch.arange(N_QUERIES).to(Q.device)
+        mask_k = torch.arange(N_KEYS).to(Q.device)
 
         flash_fwd_kernel[(bs, Tq)](
             Q, K, V,
             O, L,
-            mask,
+            mask_q, mask_k,
             Q.stride(0), Q.stride(1), Q.stride(2),
             K.stride(0), K.stride(1), K.stride(2),
             V.stride(0), V.stride(1), V.stride(2),
             O.stride(0), O.stride(1), O.stride(2),
             L.stride(0), L.stride(1),
-            mask.stride(0), mask.stride(1),
+            mask_q.stride(0), mask_k.stride(0),
             N_QUERIES=N_QUERIES, N_KEYS=N_KEYS,
             scale=scale,
             D=D,  
@@ -473,10 +501,11 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         dK = torch.empty_like(K)
         dV = torch.empty_like(V)
         D = torch.sum(O * dO, dim=-1)
-        mask = (torch.arange(nq)[:, None] >= torch.arange(nk)[None, :]).to(Q.device)
+        mask_q = torch.arange(nq).to(Q.device)
+        mask_k = torch.arange(nk).to(Q.device)
         flash_bwd_kernel_pass1[(bs, Tk)](
             Q, K, V,
-            dO, L, D, mask,
+            dO, L, D, mask_q, mask_k,
             dK, dV,
             Q.stride(0), Q.stride(1), Q.stride(2),
             K.stride(0), K.stride(1), K.stride(2),
@@ -484,7 +513,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             dO.stride(0), dO.stride(1), dO.stride(2),
             L.stride(0), L.stride(1),
             D.stride(0), D.stride(1),
-            mask.stride(0), mask.stride(1),
+            mask_q.stride(0), mask_k.stride(0),
             dK.stride(0), dK.stride(1), dK.stride(2),
             dV.stride(0), dV.stride(1), dV.stride(2),
             nq=nq, nk=nk,
@@ -495,7 +524,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         )
         flash_bwd_kernel_pass2[(bs, Tq)](
             Q, K, V,
-            dO, L, D, mask,
+            dO, L, D, mask_q, mask_k,
             dQ,
             Q.stride(0), Q.stride(1), Q.stride(2),
             K.stride(0), K.stride(1), K.stride(2),
@@ -503,7 +532,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             dO.stride(0), dO.stride(1), dO.stride(2),
             L.stride(0), L.stride(1),
             D.stride(0), D.stride(1),
-            mask.stride(0), mask.stride(1),
+            mask_q.stride(0), mask_k.stride(0),
             dQ.stride(0), dQ.stride(1), dQ.stride(2),
             nq=nq, nk=nk,
             scale=scale,
