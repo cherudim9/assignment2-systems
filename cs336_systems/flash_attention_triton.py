@@ -1,26 +1,33 @@
 import math
+import os
 import torch
 import triton
 import triton.language as tl
 from einops import rearrange, einsum
 
 
-Grid_Bq = 32
-Grid_Bk = 32
-
-
-def autotune_get_configs(block_name):
+QUERY_BLOCK_SIZES = [32, 64, 128]
+KEY_BLOCK_SIZES = [32, 64, 128]
+NUM_STAGES = [2, 3, 4]
+NUM_WARPS = [2, 4, 8]
+if "PYTEST_VERSION" in os.environ:
+    QUERY_BLOCK_SIZES = [32]
+    KEY_BLOCK_SIZES = [32]
+    NUM_STAGES = [2]
+    NUM_WARPS = [1]
+def autotune_get_configs(block_names):
     return [
-        triton.Config({block_name: block_sizze}, num_stages=s, num_warps=w)
-        for block_sizze in [32, 64, 128]
-        for s in ([2, 3, 4])
-        for w in [2, 4, 8]
+        triton.Config({block_names[0]: query_block_size, block_names[1]: key_block_size}, num_stages=s, num_warps=w)
+        for query_block_size in QUERY_BLOCK_SIZES
+        for key_block_size in KEY_BLOCK_SIZES
+        for s in NUM_STAGES
+        for w in NUM_WARPS
     ]
 
 
 @triton.autotune(
-    configs=autotune_get_configs('K_TILE_SIZE'),
-    key=['N_KEYS']
+    configs=autotune_get_configs(['Q_TILE_SIZE', 'K_TILE_SIZE']),
+    key=['N_QUERIES', 'N_KEYS']
 )
 @triton.jit
 def flash_fwd_kernel(
@@ -140,8 +147,8 @@ def flash_fwd_kernel(
 
 
 @triton.autotune(
-    configs=autotune_get_configs('Bq'),
-    key=['nq']
+    configs=autotune_get_configs(['Bq', 'Bk']),
+    key=['nq', 'nk']
 )
 @triton.jit
 def flash_bwd_kernel_pass1(
@@ -291,8 +298,8 @@ def flash_bwd_kernel_pass1(
 
 
 @triton.autotune(
-    configs=autotune_get_configs('Bk'),
-    key=['nk']
+    configs=autotune_get_configs(['Bq', 'Bk']),
+    key=['nq', 'nk']
 )
 @triton.jit
 def flash_bwd_kernel_pass2(
@@ -435,7 +442,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         V = rearrange(V, "... seq_len d -> (...) seq_len d")
         
         bs, N_QUERIES, D = Q.shape
-        Tq = math.ceil(N_QUERIES / Grid_Bq)
         bs, N_KEYS, D = K.shape
 
         O = torch.empty_like(Q)
@@ -443,7 +449,9 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         mask_q = torch.arange(N_QUERIES).to(Q.device)
         mask_k = torch.arange(N_KEYS).to(Q.device)
 
-        flash_fwd_kernel[(bs, Tq)](
+        def grid(META):
+            return (bs, triton.cdiv(N_QUERIES, META["Q_TILE_SIZE"]))
+        flash_fwd_kernel[grid](
             Q, K, V,
             O, L,
             mask_q, mask_k,
@@ -455,7 +463,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             mask_q.stride(0), mask_k.stride(0),
             N_QUERIES=N_QUERIES, N_KEYS=N_KEYS,
             D=D,  
-            Q_TILE_SIZE=Grid_Bq,
             is_causal=is_causal,
         )
 
@@ -507,8 +514,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         # recover all parameters
         bs, nq, d = Q.shape
         nk = K.shape[1]
-        Tq = math.ceil(nq/Grid_Bq)
-        Tk = math.ceil(nk/Grid_Bk)
         is_causal = ctx.is_causal
 
         dQ = torch.empty_like(Q)
@@ -517,7 +522,9 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         D = torch.sum(O * dO, dim=-1)
         mask_q = torch.arange(nq).to(Q.device)
         mask_k = torch.arange(nk).to(Q.device)
-        flash_bwd_kernel_pass1[(bs, Tk)](
+        def grid_k(META):
+            return (bs, triton.cdiv(nk, META["Bk"]))
+        flash_bwd_kernel_pass1[grid_k](
             Q, K, V,
             dO, L, D, mask_q, mask_k,
             dK, dV,
@@ -532,10 +539,11 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             dV.stride(0), dV.stride(1), dV.stride(2),
             nq=nq, nk=nk,
             D=d,
-            Bk=Grid_Bk,
             is_causal=is_causal,
         )
-        flash_bwd_kernel_pass2[(bs, Tq)](
+        def grid_q(META):
+            return (bs, triton.cdiv(nq, META["Bq"]))
+        flash_bwd_kernel_pass2[grid_q](
             Q, K, V,
             dO, L, D, mask_q, mask_k,
             dQ,
@@ -549,7 +557,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             dQ.stride(0), dQ.stride(1), dQ.stride(2),
             nq=nq, nk=nk,
             D=d,
-            Bq=Grid_Bq,
             is_causal=is_causal,
         )
 
