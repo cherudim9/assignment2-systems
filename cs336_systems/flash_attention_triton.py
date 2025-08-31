@@ -27,7 +27,7 @@ def autotune_get_configs(block_names):
 
 @triton.autotune(
     configs=autotune_get_configs(['Q_TILE_SIZE', 'K_TILE_SIZE']),
-    key=['N_QUERIES', 'N_KEYS']
+    key=['N_QUERIES', 'N_KEYS', 'D']
 )
 @triton.jit
 def flash_fwd_kernel(
@@ -40,7 +40,8 @@ def flash_fwd_kernel(
     stride_ob, stride_oq, stride_od,
     stride_lb, stride_lq,
     stride_mq, stride_mk,
-    N_QUERIES, N_KEYS,
+    N_QUERIES: tl.constexpr,
+    N_KEYS: tl.constexpr,
     D: tl.constexpr,
     Q_TILE_SIZE: tl.constexpr,
     K_TILE_SIZE: tl.constexpr,
@@ -148,7 +149,7 @@ def flash_fwd_kernel(
 
 @triton.autotune(
     configs=autotune_get_configs(['Bq', 'Bk']),
-    key=['nq', 'nk']
+    key=['nq', 'nk', 'D']
 )
 @triton.jit
 def flash_bwd_kernel_pass1(
@@ -164,7 +165,8 @@ def flash_bwd_kernel_pass1(
     stride_mq, stride_mk,
     stride_dkb, stride_dkk, stride_dkd,
     stride_dvb, stride_dvk, stride_dvd,
-    nq, nk,
+    nq: tl.constexpr,
+    nk: tl.constexpr,
     D: tl.constexpr,
     Bq: tl.constexpr, Bk: tl.constexpr,
     is_causal: tl.constexpr,
@@ -299,7 +301,7 @@ def flash_bwd_kernel_pass1(
 
 @triton.autotune(
     configs=autotune_get_configs(['Bq', 'Bk']),
-    key=['nq', 'nk']
+    key=['nq', 'nk', 'D']
 )
 @triton.jit
 def flash_bwd_kernel_pass2(
@@ -314,7 +316,8 @@ def flash_bwd_kernel_pass2(
     stride_db, stride_dq,
     stride_mq, stride_mk,
     stride_dqb, stride_dqq, stride_dqd,
-    nq, nk,
+    nq: tl.constexpr,
+    nk: tl.constexpr,
     D: tl.constexpr,
     Bq: tl.constexpr, Bk: tl.constexpr,
     is_causal: tl.constexpr,
