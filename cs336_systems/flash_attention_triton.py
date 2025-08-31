@@ -5,19 +5,22 @@ import triton.language as tl
 from einops import rearrange, einsum
 
 
-Bq = 32
-Bk = 32
+Grid_Bq = 32
+Grid_Bk = 32
+
+
+def autotune_get_configs(block_name):
+    return [
+        triton.Config({block_name: block_sizze}, num_stages=s, num_warps=w)
+        for block_sizze in [32, 64, 128]
+        for s in ([2, 3, 4])
+        for w in [1, 2, 4]
+    ]
 
 
 @triton.autotune(
-    configs=[
-        triton.Config({'Q_TILE_SIZE': 32, 'K_TILE_SIZE': 32}, num_warps=1),
-        triton.Config({'Q_TILE_SIZE': 64, 'K_TILE_SIZE': 64}, num_warps=1),
-        triton.Config({'Q_TILE_SIZE': 64, 'K_TILE_SIZE': 64}, num_warps=2),
-        triton.Config({'Q_TILE_SIZE': 128, 'K_TILE_SIZE': 128}, num_warps=2),
-        triton.Config({'Q_TILE_SIZE': 128, 'K_TILE_SIZE': 128}, num_warps=4),
-    ],
-    key=['N_QUERIES', 'N_KEYS']
+    configs=autotune_get_configs('K_TILE_SIZE'),
+    key=['N_KEYS']
 )
 @triton.jit
 def flash_fwd_kernel(
@@ -137,14 +140,8 @@ def flash_fwd_kernel(
 
 
 @triton.autotune(
-    configs=[
-        triton.Config({'Bq': 32, 'Bk': 32}, num_warps=1),
-        triton.Config({'Bq': 64, 'Bk': 64}, num_warps=1),
-        triton.Config({'Bq': 64, 'Bk': 64}, num_warps=2),
-        triton.Config({'Bq': 128, 'Bk': 128}, num_warps=2),
-        triton.Config({'Bq': 128, 'Bk': 128}, num_warps=4),
-    ],
-    key=['nq', 'nk']
+    configs=autotune_get_configs('Bq'),
+    key=['nq']
 )
 @triton.jit
 def flash_bwd_kernel_pass1(
@@ -294,14 +291,8 @@ def flash_bwd_kernel_pass1(
 
 
 @triton.autotune(
-    configs=[
-        triton.Config({'Bq': 32, 'Bk': 32}, num_warps=1),
-        triton.Config({'Bq': 64, 'Bk': 64}, num_warps=1),
-        triton.Config({'Bq': 64, 'Bk': 64}, num_warps=2),
-        triton.Config({'Bq': 128, 'Bk': 128}, num_warps=2),
-        triton.Config({'Bq': 128, 'Bk': 128}, num_warps=4),
-    ],
-    key=['nq', 'nk']
+    configs=autotune_get_configs('Bk'),
+    key=['nk']
 )
 @triton.jit
 def flash_bwd_kernel_pass2(
@@ -444,7 +435,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         V = rearrange(V, "... seq_len d -> (...) seq_len d")
         
         bs, N_QUERIES, D = Q.shape
-        Tq = math.ceil(N_QUERIES / Bq)
+        Tq = math.ceil(N_QUERIES / Grid_Bq)
         bs, N_KEYS, D = K.shape
 
         O = torch.empty_like(Q)
@@ -464,15 +455,12 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             mask_q.stride(0), mask_k.stride(0),
             N_QUERIES=N_QUERIES, N_KEYS=N_KEYS,
             D=D,  
-            Q_TILE_SIZE=Bq,
-            K_TILE_SIZE=Bk,
+            Q_TILE_SIZE=Grid_Bq,
             is_causal=is_causal,
         )
 
         L = L.view(Q_shape[:-1])
         ctx.save_for_backward(Q, K, V, O, L)
-        ctx.Bq = Bq
-        ctx.Bk = Bk
         ctx.Q_shape = Q_shape
         ctx.K_shape = K_shape
         ctx.is_causal = is_causal
@@ -517,11 +505,10 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         Q, K, V, O, L = ctx.saved_tensors
 
         # recover all parameters
-        Bq, Bk = ctx.Bq, ctx.Bk
         bs, nq, d = Q.shape
         nk = K.shape[1]
-        Tq = math.ceil(nq/Bq)
-        Tk = math.ceil(nk/Bk)
+        Tq = math.ceil(nq/Grid_Bq)
+        Tk = math.ceil(nk/Grid_Bk)
         is_causal = ctx.is_causal
 
         dQ = torch.empty_like(Q)
@@ -545,7 +532,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             dV.stride(0), dV.stride(1), dV.stride(2),
             nq=nq, nk=nk,
             D=d,
-            Bq=Bq, Bk=Bk,
+            Bk=Grid_Bk,
             is_causal=is_causal,
         )
         flash_bwd_kernel_pass2[(bs, Tq)](
@@ -562,7 +549,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             dQ.stride(0), dQ.stride(1), dQ.stride(2),
             nq=nq, nk=nk,
             D=d,
-            Bq=Bq, Bk=Bk,
+            Bq=Grid_Bq,
             is_causal=is_causal,
         )
 
@@ -576,7 +563,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         Q, K, V, O, L = ctx.saved_tensors
 
         # recover all parameters
-        Bq, Bk = ctx.Bq, ctx.Bk
+        Bq, Bk = Grid_Bq, Grid_Bk
         bs, nq, d = Q.shape
         nk = K.shape[1]
         Tq = math.ceil(nq/Bq)
