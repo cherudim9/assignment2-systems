@@ -14,7 +14,7 @@ def autotune_get_configs(block_name):
         triton.Config({block_name: block_sizze}, num_stages=s, num_warps=w)
         for block_sizze in [32, 64, 128]
         for s in ([2, 3, 4])
-        for w in [1, 2, 4]
+        for w in [2, 4, 8]
     ]
 
 
@@ -106,16 +106,16 @@ def flash_fwd_kernel(
             s = tl.where(mask_q[:, None] >=  mask_k[None, :], s, -1e6)
         prev_m = m
         m = tl.maximum(prev_m, tl.max(s, axis=1))
-        p = tl.exp(s - m.expand_dims(axis=1))
+        p = tl.exp(s - m[:, None])
         l = l * tl.exp(prev_m - m) + tl.sum(p, axis=1)
-        o = tl.exp(prev_m - m).expand_dims(axis=1) * o
+        o = o * tl.exp(prev_m - m)[:, None]
         o = tl.dot(p.to(dtype=V_block_ptr.dtype.element_ty), vj, acc=o)
 
         K_block_ptr = K_block_ptr.advance((K_TILE_SIZE, 0))
         V_block_ptr = V_block_ptr.advance((K_TILE_SIZE, 0))
         mask_k_block_ptr = mask_k_block_ptr.advance((K_TILE_SIZE,))
 
-    o = (1.0 / l).expand_dims(axis=1) * o
+    o = o * (1.0 / l)[:, None]
     l = tl.log(l) + m
 
     O_block_ptr = tl.make_block_ptr(
@@ -251,7 +251,7 @@ def flash_bwd_kernel_pass1(
             s = tl.where(mask_q[:, None] >=  mask_k[None, :], s, -1e6)
 
         li =  tl.load(L_block_ptr, boundary_check=(0,), padding_option="zero")
-        p = tl.exp(s - li.expand_dims(axis=1))
+        p = tl.exp(s - li[:, None])
         
         doi = tl.load(dO_block_ptr, boundary_check=(0,1), padding_option="zero")
         p = p.to(Q_block_ptr.dtype.element_ty)
@@ -259,7 +259,7 @@ def flash_bwd_kernel_pass1(
         dP = tl.dot(doi, vj.trans())
 
         Di = tl.load(D_block_ptr, boundary_check=(0,), padding_option="zero")
-        ds = p * (dP - Di.expand_dims(axis=1)) * scale
+        ds = p * (dP - Di[:, None]) * scale
         ds = ds.to(Q_block_ptr.dtype.element_ty)
         dK_sum = tl.dot(ds.trans(), qi, acc=dK_sum)
 
@@ -402,9 +402,9 @@ def flash_bwd_kernel_pass2(
             mask_k = tl.load(mask_k_block_ptr, boundary_check=(0,), padding_option="zero")
             s = tl.where(mask_q[:, None] >=  mask_k[None, :], s, -1e6)
 
-        p = tl.exp(s - li.expand_dims(axis=1))
+        p = tl.exp(s - li[:, None])
         dP = tl.dot(doi, vj.trans())
-        ds = p * (dP - Di.expand_dims(axis=1)) * scale
+        ds = p * (dP - Di[:, None]) * scale
         ds = ds.to(Q_block_ptr.dtype.element_ty)
         dQ_sum = tl.dot(ds, kj, acc=dQ_sum)
 
