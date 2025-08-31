@@ -414,7 +414,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         V = rearrange(V, "... seq_len d -> (...) seq_len d")
         
         bs, N_QUERIES, D = Q.shape
-        scale = D ** -0.5
+        scale = torch.tensor(D ** -0.5, device=Q.device)
         Tq = math.ceil(N_QUERIES / Bq)
         bs, N_KEYS, D = K.shape
 
@@ -494,7 +494,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         nk = K.shape[1]
         Tq = math.ceil(nq/Bq)
         Tk = math.ceil(nk/Bk)
-        scale = d ** -0.5
+        scale = torch.tensor(d ** -0.5, device=Q.device)
         is_causal = ctx.is_causal
 
         dQ = torch.empty_like(Q)
