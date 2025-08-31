@@ -21,7 +21,6 @@ def flash_fwd_kernel(
     stride_lb, stride_lq,
     stride_mq, stride_mk,
     N_QUERIES, N_KEYS,
-    scale,
     D: tl.constexpr,
     Q_TILE_SIZE: tl.constexpr,
     K_TILE_SIZE: tl.constexpr,
@@ -82,7 +81,8 @@ def flash_fwd_kernel(
     o = tl.zeros((Q_TILE_SIZE, D), dtype=tl.float32)
     l = tl.zeros((Q_TILE_SIZE,), dtype=tl.float32)
     m = tl.full((Q_TILE_SIZE,), float('-inf'), dtype=tl.float32)
-    
+
+    scale = tl.full([], D ** -0.5, tl.float32)
     for _ in range(tl.cdiv(N_KEYS, K_TILE_SIZE)):
         kj = tl.load(K_block_ptr, boundary_check=(0,1), padding_option="zero")
         vj = tl.load(V_block_ptr, boundary_check=(0,1), padding_option="zero")
@@ -141,7 +141,6 @@ def flash_bwd_kernel_pass1(
     stride_dkb, stride_dkk, stride_dkd,
     stride_dvb, stride_dvk, stride_dvd,
     nq, nk,
-    scale, 
     D: tl.constexpr,
     Bq: tl.constexpr, Bk: tl.constexpr,
     is_causal: tl.constexpr,
@@ -222,7 +221,8 @@ def flash_bwd_kernel_pass1(
         order=(0,),
     )
     mask_k = tl.load(mask_k_block_ptr, boundary_check=(0,), padding_option="zero")
-
+    
+    scale = tl.full([], D ** -0.5, tl.float32)
     dK_sum = tl.zeros((Bk, D), dtype=tl.float32)
     dV_sum = tl.zeros((Bk, D), dtype=tl.float32)
 
@@ -287,7 +287,6 @@ def flash_bwd_kernel_pass2(
     stride_mq, stride_mk,
     stride_dqb, stride_dqq, stride_dqd,
     nq, nk,
-    scale, 
     D: tl.constexpr,
     Bq: tl.constexpr, Bk: tl.constexpr,
     is_causal: tl.constexpr,
@@ -371,6 +370,7 @@ def flash_bwd_kernel_pass2(
         order=(1, 0),
     )
 
+    scale = tl.full([], D ** -0.5, tl.float32)
     dQ_sum = tl.zeros((Bq, D), dtype=tl.float32)
 
     for _ in range(tl.cdiv(nk, Bk)):
@@ -414,7 +414,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         V = rearrange(V, "... seq_len d -> (...) seq_len d")
         
         bs, N_QUERIES, D = Q.shape
-        scale = torch.tensor(D ** -0.5, device=Q.device)
         Tq = math.ceil(N_QUERIES / Bq)
         bs, N_KEYS, D = K.shape
 
@@ -434,7 +433,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             L.stride(0), L.stride(1),
             mask_q.stride(0), mask_k.stride(0),
             N_QUERIES=N_QUERIES, N_KEYS=N_KEYS,
-            scale=scale,
             D=D,  
             Q_TILE_SIZE=Bq,
             K_TILE_SIZE=Bk,
@@ -494,7 +492,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         nk = K.shape[1]
         Tq = math.ceil(nq/Bq)
         Tk = math.ceil(nk/Bk)
-        scale = torch.tensor(d ** -0.5, device=Q.device)
         is_causal = ctx.is_causal
 
         dQ = torch.empty_like(Q)
@@ -517,7 +514,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             dK.stride(0), dK.stride(1), dK.stride(2),
             dV.stride(0), dV.stride(1), dV.stride(2),
             nq=nq, nk=nk,
-            scale=scale,
             D=d,
             Bq=Bq, Bk=Bk,
             is_causal=is_causal,
@@ -535,7 +531,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             mask_q.stride(0), mask_k.stride(0),
             dQ.stride(0), dQ.stride(1), dQ.stride(2),
             nq=nq, nk=nk,
-            scale=scale,
             D=d,
             Bq=Bq, Bk=Bk,
             is_causal=is_causal,
