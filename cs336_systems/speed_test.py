@@ -19,6 +19,7 @@ def test_timing_flash_forward_backward():
         3, N_HEADS, SEQUENCE_LENGTH, D_HEAD, device=DEVICE, dtype=torch.bfloat16, requires_grad=True)
     
     model = torch.compile(FlashAttentionTritonFunc.apply)
+    # model = torch.compile(lambda *x: _attention_and_lse(*x)[0])
 
     def test_all():
         o = model(q, k, v, True)
