@@ -219,11 +219,13 @@ def flash_bwd_kernel_pass1(
         p = tl.exp(s - li.expand_dims(axis=1))
         
         doi = tl.load(dO_block_ptr, boundary_check=(0,1), padding_option="zero")
+        p = p.to(Q_block_ptr.dtype.element_ty)
         dV_sum = tl.dot(p.trans(), doi, acc=dV_sum)
         dP = tl.dot(doi, vj.trans())
 
         Di = tl.load(D_block_ptr, boundary_check=(0,), padding_option="zero")
         ds = p * (dP - Di.expand_dims(axis=1)) * scale
+        ds = ds.to(Q_block_ptr.dtype.element_ty)
         dK_sum = tl.dot(ds.trans(), qi, acc=dK_sum)
 
         Q_block_ptr = Q_block_ptr.advance((Bq, 0))
@@ -355,6 +357,7 @@ def flash_bwd_kernel_pass2(
         p = tl.exp(s - li.expand_dims(axis=1))
         dP = tl.dot(doi, vj.trans())
         ds = p * (dP - Di.expand_dims(axis=1)) * scale
+        ds = ds.to(Q_block_ptr.dtype.element_ty)
         dQ_sum = tl.dot(ds, kj, acc=dQ_sum)
 
         K_block_ptr = K_block_ptr.advance((Bk, 0))
