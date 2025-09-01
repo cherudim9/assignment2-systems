@@ -6,8 +6,8 @@ import triton.language as tl
 from einops import rearrange, einsum
 
 
-QUERY_BLOCK_SIZES = [32, 64, 128]
-KEY_BLOCK_SIZES = [32, 64, 128]
+QUERY_BLOCK_SIZES = [32, 64, 128, 256]
+KEY_BLOCK_SIZES = [32, 64, 128, 256]
 NUM_STAGES = [2, 3, 4]
 NUM_WARPS = [2, 4, 8]
 if "PYTEST_VERSION" in os.environ:
@@ -19,18 +19,45 @@ if "PYTEST_VERSION" in os.environ:
 
 def autotune_get_configs(block_names):
     return [
-        triton.Config({block_names[0]: query_block_size, block_names[1]: key_block_size}, num_stages=s, num_warps=w)
+        triton.Config(
+            {block_names[0]: query_block_size, block_names[1]: key_block_size},
+            num_stages=s, num_warps=w
+        )
         for query_block_size in QUERY_BLOCK_SIZES
         for key_block_size in KEY_BLOCK_SIZES
         for s in NUM_STAGES
         for w in NUM_WARPS
+        if query_block_size * key_block_size < 8192 and \
+            w * 16 <= query_block_size
     ]
 
 
 def prune_invalid_configs(configs, named_args, **kwargs):
     nq = kwargs["nq"]
     nk = kwargs["nk"]
-    return [conf for conf in configs if conf.kwargs.get("Bq", 0) <= nq and conf.kwargs.get("Bk", 0) <= nk]
+    D = kwargs["D"]
+    
+    pruned = []
+    for conf in configs:
+        Bq = conf.kwargs.get("Bq", 0)
+        Bk = conf.kwargs.get("Bk", 0)
+        
+        # Basic size constraints
+        if Bq > nq or Bk > nk:
+            continue
+            
+        # Memory usage heuristic - avoid configurations that use too much shared memory
+        estimated_smem = (Bq * D + Bk * D) * 4  # Rough estimate in bytes
+        if estimated_smem > 48000:  # Conservative shared memory limit
+            continue
+            
+        # Avoid very unbalanced tiles
+        if Bq > 4 * Bk or Bk > 4 * Bq:
+            continue
+            
+        pruned.append(conf)
+    
+    return pruned
 
 
 @triton.autotune(
