@@ -36,7 +36,7 @@ def prune_invalid_configs(configs, named_args, **kwargs):
 @triton.autotune(
     configs=autotune_get_configs(['Bq', 'Bk']),
     key=['nq', 'nk', 'D'],
-    prune_configs_by={'early_config_prune': prune_invalid_configs}
+    prune_configs_by={'early_config_prune': prune_invalid_configs},
 )
 @triton.jit
 def flash_fwd_kernel(
@@ -141,7 +141,8 @@ def flash_fwd_kernel(
 
 @triton.autotune(
     configs=autotune_get_configs(['Bq', 'Bk']),
-    key=['nq', 'nk', 'D']
+    key=['nq', 'nk', 'D'],
+    prune_configs_by={'early_config_prune': prune_invalid_configs},
 )
 @triton.jit
 def flash_bwd_kernel_pass1(
@@ -275,7 +276,8 @@ def flash_bwd_kernel_pass1(
 
 @triton.autotune(
     configs=autotune_get_configs(['Bq', 'Bk']),
-    key=['nq', 'nk', 'D']
+    key=['nq', 'nk', 'D'],
+    prune_configs_by={'early_config_prune': prune_invalid_configs},
 )
 @triton.jit
 def flash_bwd_kernel_pass2(
