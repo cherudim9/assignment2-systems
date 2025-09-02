@@ -72,11 +72,11 @@ def prune_invalid_configs(configs, named_args, **kwargs):
     return pruned
 
 
-@triton.autotune(
-    configs=autotune_get_configs(['Bq', 'Bk']),
-    key=['nq', 'nk', 'D'],
-    prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
-)
+# @triton.autotune(
+#     configs=autotune_get_configs(['Bq', 'Bk']),
+#     key=['nq', 'nk', 'D'],
+#     prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
+# )
 @triton.jit
 def flash_fwd_kernel(
     Q_ptr, K_ptr, V_ptr,
@@ -178,11 +178,11 @@ def flash_fwd_kernel(
     tl.store(L_block_ptr, l.to(L_block_ptr.dtype.element_ty), boundary_check=(0,))
 
 
-@triton.autotune(
-    configs=autotune_get_configs(['Bq', 'Bk']),
-    key=['nq', 'nk', 'D'],
-    prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
-)
+# @triton.autotune(
+#     configs=autotune_get_configs(['Bq', 'Bk']),
+#     key=['nq', 'nk', 'D'],
+#     prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
+# )
 @triton.jit
 def flash_bwd_kernel_pass1(
     Q_ptr, K_ptr, V_ptr,
@@ -313,11 +313,11 @@ def flash_bwd_kernel_pass1(
     tl.store(dV_block_ptr, dV_sum.to(dV_block_ptr.dtype.element_ty), boundary_check=(0,1))
 
 
-@triton.autotune(
-    configs=autotune_get_configs(['Bq', 'Bk']),
-    key=['nq', 'nk', 'D'],
-    prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
-)
+# @triton.autotune(
+#     configs=autotune_get_configs(['Bq', 'Bk']),
+#     key=['nq', 'nk', 'D'],
+#     prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
+# )
 @triton.jit
 def flash_bwd_kernel_pass2(
     Q_ptr, K_ptr, V_ptr,
@@ -462,6 +462,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             nq=nq, nk=nk,
             D=D,  
             is_causal=is_causal,
+            Bq=32, Bk=32,
         )
 
         L = L.view(Q_shape[:-1])
@@ -535,6 +536,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             nq=nq, nk=nk,
             D=d,
             is_causal=is_causal,
+            Bq=32, Bk=32,
         )
         def grid_q(META):
             return (triton.cdiv(nq, META["Bq"]), bs)
@@ -552,6 +554,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             nq=nq, nk=nk,
             D=d,
             is_causal=is_causal,
+            Bq=32, Bk=32,
         )
 
         dQ = dQ.view(ctx.Q_shape)
