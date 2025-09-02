@@ -6,10 +6,13 @@ import triton.language as tl
 from einops import rearrange, einsum
 
 
-QUERY_BLOCK_SIZES = [32, 64, 128, 256]
-KEY_BLOCK_SIZES = [32, 64, 128, 256]
+os.environ['TRITON_PRINT_AUTOTUNING'] = '1'
+
+
+QUERY_BLOCK_SIZES = [32, 64, 128]
+KEY_BLOCK_SIZES = [32, 64, 128]
 NUM_STAGES = [2, 3, 4]
-NUM_WARPS = [2, 4, 8]
+NUM_WARPS = [1, 2, 4, 8]
 if "PYTEST_VERSION" in os.environ:
     QUERY_BLOCK_SIZES = [32]
     KEY_BLOCK_SIZES = [32]
@@ -32,6 +35,15 @@ def autotune_get_configs(block_names):
     ]
 
 
+def capture_best_config(configs, named_args, **kwargs):
+    """Called after autotuning to capture the winning configuration"""
+    if len(configs) == 1:  # Only one config left = the winner
+        print(f"\n🏆 BEST CONFIG for nq={kwargs['nq']}, nk={kwargs['nk']}, D={kwargs['D']}:")
+        print(f"   Bq={configs[0].kwargs['Bq']}, Bk={configs[0].kwargs['Bk']}")
+        print(f"   num_stages={configs[0].num_stages}, num_warps={configs[0].num_warps}")
+    return configs
+
+
 def prune_invalid_configs(configs, named_args, **kwargs):
     nq = kwargs["nq"]
     nk = kwargs["nk"]
@@ -48,7 +60,7 @@ def prune_invalid_configs(configs, named_args, **kwargs):
             
         # Memory usage heuristic - avoid configurations that use too much shared memory
         estimated_smem = (Bq * D + Bk * D) * 4  # Rough estimate in bytes
-        if estimated_smem > 48000:  # Conservative shared memory limit
+        if estimated_smem > 480000:  # shared memory limit
             continue
             
         # Avoid very unbalanced tiles
@@ -63,7 +75,7 @@ def prune_invalid_configs(configs, named_args, **kwargs):
 @triton.autotune(
     configs=autotune_get_configs(['Bq', 'Bk']),
     key=['nq', 'nk', 'D'],
-    prune_configs_by={'early_config_prune': prune_invalid_configs},
+    prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
 )
 @triton.jit
 def flash_fwd_kernel(
@@ -169,7 +181,7 @@ def flash_fwd_kernel(
 @triton.autotune(
     configs=autotune_get_configs(['Bq', 'Bk']),
     key=['nq', 'nk', 'D'],
-    prune_configs_by={'early_config_prune': prune_invalid_configs},
+    prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
 )
 @triton.jit
 def flash_bwd_kernel_pass1(
@@ -304,7 +316,7 @@ def flash_bwd_kernel_pass1(
 @triton.autotune(
     configs=autotune_get_configs(['Bq', 'Bk']),
     key=['nq', 'nk', 'D'],
-    prune_configs_by={'early_config_prune': prune_invalid_configs},
+    prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
 )
 @triton.jit
 def flash_bwd_kernel_pass2(
