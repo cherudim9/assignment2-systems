@@ -12,7 +12,7 @@ FIXTURES_PATH = (pathlib.Path(__file__).resolve().parent) / "fixtures"
 
 def validate_ddp_net_equivalence(net):
     # Helper to validate synchronization of nets across ranks.
-    net_module_states = list(net.module.state_dict().values())
+    net_module_states = list(net.state_dict().values())
     # Check that all tensors in module's state_dict() are equal.
     for t in net_module_states:
         tensor_list = [torch.zeros_like(t) for _ in range(dist.get_world_size())]
