@@ -35,15 +35,6 @@ def autotune_get_configs(block_names):
     ]
 
 
-def capture_best_config(configs, named_args, **kwargs):
-    """Called after autotuning to capture the winning configuration"""
-    if len(configs) == 1:  # Only one config left = the winner
-        print(f"\n🏆 BEST CONFIG for nq={kwargs['nq']}, nk={kwargs['nk']}, D={kwargs['D']}:")
-        print(f"   Bq={configs[0].kwargs['Bq']}, Bk={configs[0].kwargs['Bk']}")
-        print(f"   num_stages={configs[0].num_stages}, num_warps={configs[0].num_warps}")
-    return configs
-
-
 def prune_invalid_configs(configs, named_args, **kwargs):
     nq = kwargs["nq"]
     nk = kwargs["nk"]
@@ -72,11 +63,11 @@ def prune_invalid_configs(configs, named_args, **kwargs):
     return pruned
 
 
-# @triton.autotune(
-#     configs=autotune_get_configs(['Bq', 'Bk']),
-#     key=['nq', 'nk', 'D'],
-#     prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
-# )
+@triton.autotune(
+    configs=autotune_get_configs(['Bq', 'Bk']),
+    key=['nq', 'nk', 'D'],
+    prune_configs_by={'early_config_prune': prune_invalid_configs},
+)
 @triton.jit
 def flash_fwd_kernel(
     Q_ptr, K_ptr, V_ptr,
@@ -181,7 +172,7 @@ def flash_fwd_kernel(
 # @triton.autotune(
 #     configs=autotune_get_configs(['Bq', 'Bk']),
 #     key=['nq', 'nk', 'D'],
-#     prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
+#     prune_configs_by={'early_config_prune': prune_invalid_configs},
 # )
 @triton.jit
 def flash_bwd_kernel_pass1(
@@ -316,7 +307,7 @@ def flash_bwd_kernel_pass1(
 # @triton.autotune(
 #     configs=autotune_get_configs(['Bq', 'Bk']),
 #     key=['nq', 'nk', 'D'],
-#     prune_configs_by={'early_config_prune': prune_invalid_configs, 'perf_model': capture_best_config,},
+#     prune_configs_by={'early_config_prune': prune_invalid_configs},
 # )
 @triton.jit
 def flash_bwd_kernel_pass2(
