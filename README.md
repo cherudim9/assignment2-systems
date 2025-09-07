@@ -6,6 +6,15 @@ For a full description of the assignment, see the assignment handout at
 If you see any issues with the assignment handout or code, please feel free to
 raise a GitHub issue or open a pull request with a fix.
 
+## MY RESULTS:
+
+``` sh
+root@c5cbf4f37f0b:/workspace/assignment2-systems# uv run python cs336_systems/speed_test.py 
+14.739538666642742
+root@c5cbf4f37f0b:/workspace/assignment2-systems# uv run python cs336_systems/speed_test.py 
+14.692251224725466
+```
+
 ## Setup
 
 This directory is organized as follows:
