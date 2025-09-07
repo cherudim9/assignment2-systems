@@ -35,6 +35,7 @@ def autotune_get_configs(block_names):
     ]
 
 
+# this pruning block comes from Gemini 2.5 Pro.
 def prune_invalid_configs(configs, named_args, **kwargs):
     nq = kwargs["nq"]
     nk = kwargs["nk"]
@@ -51,7 +52,7 @@ def prune_invalid_configs(configs, named_args, **kwargs):
             
         # Memory usage heuristic - avoid configurations that use too much shared memory
         estimated_smem = (Bq * D + Bk * D) * 4  # Rough estimate in bytes
-        if estimated_smem > 480000:  # shared memory limit
+        if estimated_smem > 48000:  # shared memory limit
             continue
             
         # Avoid very unbalanced tiles
@@ -169,11 +170,11 @@ def flash_fwd_kernel(
     tl.store(L_block_ptr, l.to(L_block_ptr.dtype.element_ty), boundary_check=(0,))
 
 
-# @triton.autotune(
-#     configs=autotune_get_configs(['Bq', 'Bk']),
-#     key=['nq', 'nk', 'D'],
-#     prune_configs_by={'early_config_prune': prune_invalid_configs},
-# )
+@triton.autotune(
+    configs=autotune_get_configs(['Bq', 'Bk']),
+    key=['nq', 'nk', 'D'],
+    prune_configs_by={'early_config_prune': prune_invalid_configs},
+)
 @triton.jit
 def flash_bwd_kernel_pass1(
     Q_ptr, K_ptr, V_ptr,
@@ -304,11 +305,11 @@ def flash_bwd_kernel_pass1(
     tl.store(dV_block_ptr, dV_sum.to(dV_block_ptr.dtype.element_ty), boundary_check=(0,1))
 
 
-# @triton.autotune(
-#     configs=autotune_get_configs(['Bq', 'Bk']),
-#     key=['nq', 'nk', 'D'],
-#     prune_configs_by={'early_config_prune': prune_invalid_configs},
-# )
+@triton.autotune(
+    configs=autotune_get_configs(['Bq', 'Bk']),
+    key=['nq', 'nk', 'D'],
+    prune_configs_by={'early_config_prune': prune_invalid_configs},
+)
 @triton.jit
 def flash_bwd_kernel_pass2(
     Q_ptr, K_ptr, V_ptr,
@@ -453,7 +454,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             nq=nq, nk=nk,
             D=D,  
             is_causal=is_causal,
-            Bq=32, Bk=32,
         )
 
         L = L.view(Q_shape[:-1])
@@ -527,7 +527,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             nq=nq, nk=nk,
             D=d,
             is_causal=is_causal,
-            Bq=32, Bk=32,
         )
         def grid_q(META):
             return (triton.cdiv(nq, META["Bq"]), bs)
@@ -545,7 +544,6 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
             nq=nq, nk=nk,
             D=d,
             is_causal=is_causal,
-            Bq=32, Bk=32,
         )
 
         dQ = dQ.view(ctx.Q_shape)
@@ -558,7 +556,7 @@ class FlashAttentionTritonFunc(torch.autograd.Function):
         Q, K, V, O, L = ctx.saved_tensors
 
         # recover all parameters
-        Bq, Bk = Grid_Bq, Grid_Bk
+        Bq, Bk = 32, 32
         bs, nq, d = Q.shape
         nk = K.shape[1]
         Tq = math.ceil(nq/Bq)

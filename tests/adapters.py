@@ -6,7 +6,7 @@ import torch
 
 from cs336_systems.ddp import ddp_individual_parameters, ddp_bucketed
 from cs336_systems.flash_attention import FlashAttentionFunc
-# from cs336_systems.flash_attention_triton import FlashAttentionTritonFunc
+from cs336_systems.flash_attention_triton import FlashAttentionTritonFunc
 from cs336_systems.sharded_optimizer import ShardedOptimizer
 
 
@@ -35,8 +35,6 @@ def get_flashattention_autograd_function_triton() -> Type:
     Returns:
         A class object (not an instance of the class)
     """
-    # For example: return MyTritonFlashAttentionAutogradFunctionClass
-    # FlashAttentionTritonFunc = None
     return FlashAttentionTritonFunc
 
 

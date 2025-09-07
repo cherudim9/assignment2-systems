@@ -9,7 +9,7 @@ DEVICE = 'cuda'
 REP = 10000
 WARMUP = 1000
 N_HEADS = 16
-D_HEAD = 1024
+D_HEAD = 64 # !!!!!!! d_model=1024, so... what a silly mistake from me.
 SEQUENCE_LENGTH = 16384
 
 
